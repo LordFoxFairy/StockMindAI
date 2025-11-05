@@ -57,7 +57,7 @@ export default function Home() {
     setIsLoading(true);
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
       const response = await fetch(`${apiUrl}/api/chat`, {
         method: 'POST',
         headers: {
@@ -98,7 +98,7 @@ export default function Home() {
                 // Handle different types of messages according to LangChain/deepagents stream format
 
                 // Assuming chunking logic:
-                if (data.type === 'text' && data.content) {
+                if ((data.type === 'text' || data.type === 'mixed') && data.content) {
                   // Standard content chunks from the model
                   if (typeof data.content === 'string') {
                     fullAssistantMessage += data.content;
@@ -109,7 +109,9 @@ export default function Home() {
                         : m
                     ));
                   }
-                } else if (data.type === 'tool_calls' && data.tool_calls) {
+                }
+
+                if ((data.type === 'tool_calls' || data.type === 'mixed') && data.tool_calls) {
                   // The AI has made a tool call
                   for (const toolCall of data.tool_calls) {
                     if (toolCall.name === 'generate_echarts_config') {
@@ -118,6 +120,16 @@ export default function Home() {
                         if (config) {
                           setChartData(config);
                           setActiveTab('chart');
+
+                          // Optional: Add a note to the chat that a chart was generated
+                          if (!fullAssistantMessage.includes('[Chart Generated]')) {
+                            fullAssistantMessage += '\n\n*[Chart Generated]*';
+                            setMessages(prev => prev.map(m =>
+                              m.id === assistantMessageId
+                                ? { ...m, content: fullAssistantMessage }
+                                : m
+                            ));
+                          }
                         }
                       } catch (e) {
                         console.error("Error parsing tool call args", e);
@@ -141,6 +153,15 @@ export default function Home() {
                            if (config) {
                              setChartData(config);
                              setActiveTab('chart');
+
+                             if (!fullAssistantMessage.includes('[Chart Generated]')) {
+                               fullAssistantMessage += '\n\n*[Chart Generated]*';
+                               setMessages(prev => prev.map(m =>
+                                   m.id === assistantMessageId
+                                       ? { ...m, content: fullAssistantMessage }
+                                       : m
+                               ));
+                             }
                            }
                          } catch (e) {
                            console.error("Error parsing tool call args", e);

@@ -1,3 +1,0 @@
-module.exports=[2162,a=>{"use strict";var b=a.i(7997);function c({children:a}){return(0,b.jsx)("html",{lang:"zh-CN",className:"dark",children:(0,b.jsx)("body",{className:"antialiased min-h-screen bg-[#0B0E14] text-slate-300 selection:bg-blue-500/30",children:a})})}a.s(["default",()=>c,"metadata",0,{title:"StockMind AI Terminal",description:"A professional AI-powered trading and financial analysis terminal."}])}];
-
-//# sourceMappingURL=src_web_app_layout_tsx_f819a76a._.js.map

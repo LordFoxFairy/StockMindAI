@@ -31,7 +31,7 @@
     "ai": "^6.0.95",
     "clsx": "^2.1.1",
     "deepagents": "^1.8.0",
-    "duckduckgo-search": "^1.0.7",
+    "duck-duck-scrape": "^2.2.7",
     "echarts": "^6.0.0",
     "echarts-for-react": "^3.0.6",
     "framer-motion": "^12.34.3",
@@ -45,7 +45,7 @@
     "zod": "^4.3.6"
   },
   "scripts": {
-    "dev": "concurrently -n \"WEB,API\" -c \"cyan,magenta\" \"next dev src/web\" \"bun run --watch src/core/api/server.ts\"",
+    "dev": "concurrently -n \"WEB,API\" -c \"cyan,magenta\" \"next dev src/web -p 3134\" \"bun run --watch src/core/api/server.ts\"",
     "lint": "eslint . --fix",
     "build": "next build src/web",
     "start": "next start src/web"

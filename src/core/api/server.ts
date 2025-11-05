@@ -1,6 +1,6 @@
 import { createChatAgent } from "@/core/agent/chatAgent";
 
-const PORT = process.env.API_PORT || 3001;
+const PORT = process.env.API_PORT || 3135;
 
 console.log(`Starting Bun API server on port ${PORT}...`);
 
@@ -56,14 +56,14 @@ Bun.serve({
                 if (!chunkData) continue;
 
                 // Format the chunk correctly for the client
-                let type = 'text';
                 let content = '';
                 let tool_calls = undefined;
 
                 if (chunkData.tool_calls && chunkData.tool_calls.length > 0) {
-                  type = 'tool_calls';
                   tool_calls = chunkData.tool_calls;
-                } else if (chunkData.content !== undefined && chunkData.content !== null) {
+                }
+
+                if (chunkData.content !== undefined && chunkData.content !== null) {
                   // Handle AIMessageChunk
                   if (typeof chunkData.content === 'string') {
                     content = chunkData.content;
@@ -72,18 +72,25 @@ Bun.serve({
                     const textChunks = chunkData.content.filter((c: any) => c.type === 'text');
                     content = textChunks.map((c: any) => c.text).join('');
                   }
-                } else if (chunkData.kwargs) {
+                }
+
+                if (chunkData.kwargs) {
                    if (chunkData.kwargs.tool_calls && chunkData.kwargs.tool_calls.length > 0) {
-                      type = 'tool_calls';
-                      tool_calls = chunkData.kwargs.tool_calls;
-                   } else if (chunkData.kwargs.content) {
-                      content = typeof chunkData.kwargs.content === 'string'
+                      tool_calls = tool_calls || chunkData.kwargs.tool_calls;
+                   }
+                   if (chunkData.kwargs.content) {
+                      const kwargsContent = typeof chunkData.kwargs.content === 'string'
                           ? chunkData.kwargs.content
                           : '';
+                      content = content || kwargsContent;
                    }
                 }
 
                 if (content || tool_calls) {
+                  let type = 'text';
+                  if (tool_calls && content) type = 'mixed';
+                  else if (tool_calls) type = 'tool_calls';
+
                   const formattedChunk = {
                     type,
                     content,

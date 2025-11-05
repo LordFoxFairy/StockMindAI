@@ -2,12 +2,25 @@ import { createDeepAgent, CompositeBackend, StateBackend, StoreBackend } from "d
 import { ChatOpenAI } from "@langchain/openai";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { search } from "duckduckgo-search";
+import { search, SafeSearchType } from "duck-duck-scrape";
 
 const duckduckgoSearch = tool(
   async ({ query }: { query: string }) => {
     try {
-      const results = await search(query, { maxResults: 5 });
+      const results = [];
+      const searchResults = await search(query, {
+        safeSearch: SafeSearchType.MODERATE as any,
+      });
+      let count = 0;
+      for (const result of searchResults.results) {
+        if (count >= 5) break;
+        results.push({
+          title: result.title,
+          href: result.url,
+          body: result.description,
+        });
+        count++;
+      }
       return JSON.stringify(results);
     } catch (e: unknown) {
       const errorMessage = e instanceof Error ? e.message : 'Unknown error';

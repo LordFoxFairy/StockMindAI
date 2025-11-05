@@ -5,5 +5,7 @@ declare module 'duckduckgo-search' {
     [key: string]: any;
   }
 
-  export function search(query: string, options?: SearchOptions): Promise<any>;
+  // duckduckgo-search export changed
+  export function text(query: string, options?: SearchOptions): AsyncGenerator<any>;
+  export function images(query: string, options?: SearchOptions): AsyncGenerator<any>;
 }
