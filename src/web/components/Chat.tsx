@@ -44,21 +44,21 @@ export default function Chat({ className = '', messages, onSendMessage, isLoadin
 
   // Helper to format time
   const formatTime = (date: Date) => {
-    return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return date.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
   return (
     <div className={`flex flex-col h-full bg-transparent ${className}`}>
 
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-white/5 shrink-0 bg-[#0a0e17]/50 backdrop-blur-md">
+      <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-white/5 shrink-0 bg-slate-50/50 dark:bg-[#0a0e17]/50 backdrop-blur-md">
         <div className="flex items-center gap-3">
-          <Terminal className="w-5 h-5 text-cyan-400 opacity-80" />
+          <Terminal className="w-5 h-5 text-blue-500 dark:text-cyan-400 opacity-80" />
           <div>
-            <h2 className="text-xs font-mono text-slate-300 uppercase tracking-widest">Command_&_Control</h2>
+            <h2 className="text-xs font-mono text-slate-700 dark:text-slate-300 uppercase tracking-widest">命令控制台</h2>
              <div className="flex items-center gap-2 mt-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              <p className="text-[10px] text-slate-400 font-mono">AGENT THREAD: ONLINE</p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">智能体线程: 在线</p>
             </div>
           </div>
         </div>
@@ -78,36 +78,36 @@ export default function Chat({ className = '', messages, onSendMessage, isLoadin
               {/* Message Header Info */}
               <div className="flex items-center gap-2 mb-1.5 px-1">
                 {msg.role === 'system' && <AlertCircle className="w-3 h-3 text-emerald-500/70" />}
-                {msg.role === 'user' && <span className="text-[10px] text-slate-500 font-mono">{formatTime(msg.timestamp)}</span>}
+                {msg.role === 'user' && <span className="text-[10px] text-slate-500 font-mono" suppressHydrationWarning>{formatTime(msg.timestamp)}</span>}
                 <span className={`text-[10px] font-mono uppercase tracking-wider ${
-                  msg.role === 'user' ? 'text-blue-400' :
+                  msg.role === 'user' ? 'text-blue-500 dark:text-blue-400' :
                   msg.role === 'system' ? 'text-emerald-500/70' :
-                  'text-cyan-400'
+                  'text-blue-600 dark:text-cyan-400'
                 }`}>
-                  {msg.role === 'assistant' ? 'STOCKMIND_AI' : msg.role}
+                  {msg.role === 'assistant' ? 'StockMind AI' : msg.role === 'user' ? '用户' : '系统'}
                 </span>
-                {(msg.role === 'assistant' || msg.role === 'system') && <span className="text-[10px] text-slate-500 font-mono">{formatTime(msg.timestamp)}</span>}
+                {(msg.role === 'assistant' || msg.role === 'system') && <span className="text-[10px] text-slate-500 font-mono" suppressHydrationWarning>{formatTime(msg.timestamp)}</span>}
               </div>
 
               {/* Message Content Bubble */}
               <div className={`max-w-[90%] rounded-lg px-4 py-3 text-sm border font-mono ${
                 msg.role === 'user'
-                  ? 'bg-blue-900/10 text-slate-300 border-blue-500/20'
+                  ? 'bg-blue-50 dark:bg-blue-900/10 text-slate-700 dark:text-slate-300 border-blue-200 dark:border-blue-500/20'
                   : msg.role === 'system'
-                  ? 'bg-transparent text-slate-500 text-xs pl-0 border-transparent border-l-slate-800 rounded-none border-l-2'
-                  : 'bg-[#0a0e17]/80 backdrop-blur-md text-slate-300 border-white/5 shadow-lg'
+                  ? 'bg-transparent text-slate-500 text-xs pl-0 border-transparent border-l-slate-300 dark:border-l-slate-800 rounded-none border-l-2'
+                  : 'bg-slate-50 dark:bg-[#0a0e17]/80 backdrop-blur-md text-slate-700 dark:text-slate-300 border-slate-200 dark:border-white/5 shadow-lg'
               }`}>
 
                 {msg.role === 'user' ? (
                   <div className="flex items-start gap-2">
-                    <ChevronRight className="w-4 h-4 shrink-0 text-blue-400 mt-0.5" />
+                    <ChevronRight className="w-4 h-4 shrink-0 text-blue-500 dark:text-blue-400 mt-0.5" />
                     <span>{msg.content}</span>
                   </div>
                 ) : msg.role === 'system' ? (
                   <span>{msg.content}</span>
                 ) : (
                   msg.display ? msg.display : (
-                    <div className="prose prose-invert prose-sm max-w-none prose-p:leading-relaxed prose-pre:bg-[#0B0E14] prose-pre:border prose-pre:border-slate-800">
+                    <div className="prose prose-sm max-w-none prose-p:leading-relaxed dark:prose-invert prose-pre:bg-slate-100 dark:prose-pre:bg-[#0B0E14] prose-pre:border prose-pre:border-slate-200 dark:prose-pre:border-slate-800">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {msg.content || ''}
                       </ReactMarkdown>
@@ -124,17 +124,17 @@ export default function Chat({ className = '', messages, onSendMessage, isLoadin
       </div>
 
       {/* Input Area */}
-      <div className="p-4 border-t border-white/5 shrink-0 bg-[#0a0e17]/80 backdrop-blur-md">
+      <div className="p-4 border-t border-slate-200 dark:border-white/5 shrink-0 bg-slate-50/80 dark:bg-[#0a0e17]/80 backdrop-blur-md">
         <form onSubmit={handleSubmit} className="relative flex items-center group">
-          <div className="absolute left-3 flex items-center justify-center p-1 bg-slate-900/50 rounded text-slate-500 group-focus-within:text-cyan-400 transition-colors">
+          <div className="absolute left-3 flex items-center justify-center p-1 bg-slate-200/50 dark:bg-slate-900/50 rounded text-slate-400 dark:text-slate-500 group-focus-within:text-blue-500 dark:group-focus-within:text-cyan-400 transition-colors">
             <Hash className="w-3.5 h-3.5" />
           </div>
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Enter command or query..."
-            className="w-full bg-[#0a0e17] border border-white/10 rounded-lg pl-10 pr-12 py-3 focus:outline-none focus:ring-1 focus:ring-cyan-500/50 focus:border-cyan-500/50 text-sm text-slate-200 placeholder:text-slate-600 font-mono transition-all shadow-inner"
+            placeholder="输入命令或问题..."
+            className="w-full bg-white dark:bg-[#0a0e17] border border-slate-200 dark:border-white/10 rounded-lg pl-10 pr-12 py-3 focus:outline-none focus:ring-1 focus:ring-blue-500/50 dark:focus:ring-cyan-500/50 focus:border-blue-500/50 dark:focus:border-cyan-500/50 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-600 font-mono transition-all shadow-inner"
             autoComplete="off"
             spellCheck="false"
             disabled={isLoading}
@@ -142,17 +142,17 @@ export default function Chat({ className = '', messages, onSendMessage, isLoadin
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="absolute right-2 p-1.5 hover:bg-slate-800/80 disabled:hover:bg-transparent text-cyan-500 disabled:text-slate-600 rounded-md transition-colors"
+            className="absolute right-2 p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800/80 disabled:hover:bg-transparent text-blue-500 dark:text-cyan-500 disabled:text-slate-400 dark:disabled:text-slate-600 rounded-md transition-colors"
           >
             {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
           </button>
         </form>
         <div className="flex justify-between items-center mt-2 px-1">
-          <span className="text-[9px] text-slate-500 font-mono uppercase tracking-wider">
-            Natural language and compound queries supported
+          <span className="text-[9px] text-slate-400 dark:text-slate-500 font-mono uppercase tracking-wider">
+            支持自然语言和复合查询
           </span>
-          <span className="text-[9px] text-slate-600 font-mono uppercase tracking-wider">
-            ↵ to Execute
+          <span className="text-[9px] text-slate-400 dark:text-slate-600 font-mono uppercase tracking-wider">
+            ↵ 发送
           </span>
         </div>
       </div>

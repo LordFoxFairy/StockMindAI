@@ -30,7 +30,7 @@ html, body {
   height: 100%;
 }
 
-/* Custom scrollbar for dark mode */
+/* Scrollbar - Light mode */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -41,14 +41,43 @@ html, body {
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-slate-700/50 rounded-full;
+  @apply bg-slate-300 rounded-full;
 }
 
 ::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-400;
+}
+
+/* Scrollbar - Dark mode */
+.dark ::-webkit-scrollbar-thumb {
+  @apply bg-slate-700/50;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
   @apply bg-slate-600/80;
 }
 
-/* Typography styles for markdown content in dark mode */
+/* Typography styles for markdown content - Light mode */
+.prose-light {
+  --tw-prose-body: #334155;
+  --tw-prose-headings: #0f172a;
+  --tw-prose-lead: #475569;
+  --tw-prose-links: #2563eb;
+  --tw-prose-bold: #0f172a;
+  --tw-prose-counters: #475569;
+  --tw-prose-bullets: #94a3b8;
+  --tw-prose-hr: #e2e8f0;
+  --tw-prose-quotes: #475569;
+  --tw-prose-quote-borders: #e2e8f0;
+  --tw-prose-captions: #64748b;
+  --tw-prose-code: #0f172a;
+  --tw-prose-pre-code: #334155;
+  --tw-prose-pre-bg: #f1f5f9;
+  --tw-prose-th-borders: #cbd5e1;
+  --tw-prose-td-borders: #e2e8f0;
+}
+
+/* Typography styles for markdown content - Dark mode */
 .prose-invert {
   --tw-prose-body: #94a3b8;
   --tw-prose-headings: #e2e8f0;
@@ -68,7 +97,7 @@ html, body {
   --tw-prose-td-borders: #1e293b;
 }
 
-/* Add some financial tech neon accents */
+/* Selection */
 ::selection {
   @apply bg-blue-500/30 text-blue-100;
 }
