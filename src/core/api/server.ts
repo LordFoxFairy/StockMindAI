@@ -96,6 +96,7 @@ console.log(`Starting Bun API server on port ${PORT}...`);
 
 Bun.serve({
   port: PORT,
+  idleTimeout: 255, // Max idle timeout (seconds) — agent tool calls can take a while
   async fetch(req: Request) {
     const url = new URL(req.url);
 
@@ -438,9 +439,31 @@ Bun.serve({
             const toolCallAccum: Record<string, { name: string; args: string; id: string }> = {};
             let currentStep = 0;
             let lastSeenIndices = new Set<number>();
+            let controllerClosed = false;
+
+            const safeEnqueue = (data: Uint8Array) => {
+              if (controllerClosed) return;
+              try {
+                controller.enqueue(data);
+              } catch {
+                controllerClosed = true;
+              }
+            };
+
+            const safeClose = () => {
+              if (controllerClosed) return;
+              try {
+                controller.close();
+                controllerClosed = true;
+              } catch {
+                controllerClosed = true;
+              }
+            };
 
             try {
               for await (const chunk of stream) {
+                if (controllerClosed) break;
+
                 // With streamMode: "messages", LangGraph yields [AIMessageChunk, metadata]
                 let message: any;
                 if (Array.isArray(chunk)) {
@@ -471,7 +494,7 @@ Bun.serve({
 
                 // Stream text content immediately for real-time display
                 if (content) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text', content })}\n\n`));
+                  safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text', content })}\n\n`));
                 }
 
                 // DO NOT emit message.tool_calls from intermediate chunks —
@@ -526,18 +549,18 @@ Bun.serve({
                   try { args = JSON.parse(tc.args); } catch { args = tc.args; }
                   return { name: tc.name, args, id: tc.id };
                 });
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                safeEnqueue(encoder.encode(`data: ${JSON.stringify({
                   type: 'tool_calls',
                   content: '',
                   tool_calls: parsedCalls
                 })}\n\n`));
               }
 
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              safeEnqueue(encoder.encode('data: [DONE]\n\n'));
             } catch (err) {
               const errMsg = err instanceof Error ? err.message : String(err);
               console.error("Stream error:", errMsg, err);
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', content: `智能体处理出错: ${errMsg}` })}\n\n`));
+              safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', content: `智能体处理出错: ${errMsg}` })}\n\n`));
               // Still emit any accumulated tool calls before closing
               const accum = Object.values(toolCallAccum).filter(tc => tc.name && tc.args);
               if (accum.length > 0) {
@@ -546,15 +569,15 @@ Bun.serve({
                   try { args = JSON.parse(tc.args); } catch { args = tc.args; }
                   return { name: tc.name, args, id: tc.id };
                 });
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                safeEnqueue(encoder.encode(`data: ${JSON.stringify({
                   type: 'tool_calls',
                   content: '',
                   tool_calls: calls
                 })}\n\n`));
               }
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              safeEnqueue(encoder.encode('data: [DONE]\n\n'));
             } finally {
-              controller.close();
+              safeClose();
             }
           }
         });

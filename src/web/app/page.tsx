@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Chat from '@/web/components/Chat';
 import StockChart from '@/web/components/StockChart';
 import StockWatchlist from '@/web/components/StockWatchlist';
@@ -17,26 +17,106 @@ interface Message {
   timestamp: Date;
 }
 
+interface SerializedMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content?: string;
+  timestamp: string;
+}
+
+const STORAGE_KEYS = {
+  messages: 'stockmind-messages',
+  chartData: 'stockmind-chart-data',
+  selectedStock: 'stockmind-selected-stock',
+  activeTab: 'stockmind-active-tab',
+};
+
+const DEFAULT_MESSAGES: Message[] = [
+  {
+    id: 'system-1',
+    role: 'system',
+    content: 'StockMind 终端 v1.0.4 连接已建立。',
+    timestamp: new Date()
+  },
+  {
+    id: '1',
+    role: 'assistant',
+    content: '系统已初始化，可以进行技术分析和市场查询。\n\n请输入命令或自然语言查询，例如：\n* `分析贵州茅台的动量和RSI指标`\n* `显示比亚迪的MACD背离`\n* `宁德时代的支撑位在哪里？`',
+    timestamp: new Date()
+  }
+];
+
+function loadFromStorage<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const stored = localStorage.getItem(key);
+    if (!stored) return fallback;
+    return JSON.parse(stored) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveToStorage(key: string, value: unknown): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // storage full or unavailable
+  }
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'chart' | 'data' | 'watchlist'>('chart');
   const [chartData, setChartData] = useState<Record<string, unknown> | null>(null);
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'system-1',
-      role: 'system',
-      content: 'StockMind 终端 v1.0.4 连接已建立。',
-      timestamp: new Date()
-    },
-    {
-      id: '1',
-      role: 'assistant',
-      content: '系统已初始化，可以进行技术分析和市场查询。\n\n请输入命令或自然语言查询，例如：\n* `分析贵州茅台的动量和RSI指标`\n* `显示比亚迪的MACD背离`\n* `宁德时代的支撑位在哪里？`',
-      timestamp: new Date()
-    }
-  ]);
+  const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedStock, setSelectedStock] = useState<{ code: string; name: string } | null>(null);
+  const [hydrated, setHydrated] = useState(false);
   const { theme, toggleTheme } = useTheme();
+
+  // Restore state from localStorage after hydration
+  useEffect(() => {
+    const savedTab = loadFromStorage<string>(STORAGE_KEYS.activeTab, 'chart');
+    if (savedTab === 'chart' || savedTab === 'data' || savedTab === 'watchlist') {
+      setActiveTab(savedTab);
+    }
+
+    setChartData(loadFromStorage(STORAGE_KEYS.chartData, null));
+    setSelectedStock(loadFromStorage(STORAGE_KEYS.selectedStock, null));
+
+    const savedMessages = loadFromStorage<SerializedMessage[] | null>(STORAGE_KEYS.messages, null);
+    if (savedMessages && savedMessages.length > 0) {
+      setMessages(savedMessages.map(m => ({ ...m, timestamp: new Date(m.timestamp) })));
+    }
+
+    setHydrated(true);
+  }, []);
+
+  // Persist state changes to localStorage
+  useEffect(() => {
+    if (!hydrated) return;
+    saveToStorage(STORAGE_KEYS.activeTab, activeTab);
+  }, [activeTab, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    saveToStorage(STORAGE_KEYS.chartData, chartData);
+  }, [chartData, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    saveToStorage(STORAGE_KEYS.selectedStock, selectedStock);
+  }, [selectedStock, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    // Only persist serializable fields (exclude display ReactNode)
+    const serializable: SerializedMessage[] = messages.map(({ id, role, content, timestamp }) => ({
+      id, role, content, timestamp: timestamp.toISOString(),
+    }));
+    saveToStorage(STORAGE_KEYS.messages, serializable);
+  }, [messages, hydrated]);
 
   // Remove leaked tool result JSON from assistant text
   const cleanToolOutputFromText = (text: string): string => {
@@ -158,6 +238,7 @@ export default function Home() {
                       if (args?.symbol) {
                         const symbol = args.symbol as string;
                         setSelectedStock({ code: symbol, name: symbol });
+                        setActiveTab('data');
                       }
                     } catch {
                       // ignore
@@ -325,11 +406,14 @@ export default function Home() {
 
         {/* Content Area */}
         <div className="flex-1 p-4 overflow-hidden relative z-10 font-mono">
-          {selectedStock ? (
+          {activeTab === 'data' && selectedStock ? (
             <StockDetail
               code={selectedStock.code}
               name={selectedStock.name}
-              onClose={() => setSelectedStock(null)}
+              onClose={() => {
+                setSelectedStock(null);
+                setActiveTab('chart');
+              }}
               onAnalyze={(code) => {
                 handleSendMessage(`分析 ${selectedStock.name}(${code}) 的股票表现，包括技术面和基本面`);
               }}
@@ -338,6 +422,7 @@ export default function Home() {
             <StockWatchlist
               onSelectStock={(ticker, name) => {
                 setSelectedStock({ code: ticker, name });
+                setActiveTab('data');
               }}
             />
           ) : (
