@@ -28,6 +28,9 @@ package-lock.json
 *.swp
 *.swo
 
+# Docs (auto-generated)
+/docs
+
 # OS files
 .DS_Store
 Thumbs.db
