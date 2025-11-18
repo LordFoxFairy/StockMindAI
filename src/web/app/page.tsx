@@ -5,6 +5,7 @@ import Chat from '@/web/components/Chat';
 import StockChart from '@/web/components/StockChart';
 import StockWatchlist from '@/web/components/StockWatchlist';
 import StockDetail from '@/web/components/StockDetail';
+import QuantStrategy from '@/web/components/QuantStrategy';
 import { Activity, BarChart2, Bell, LayoutDashboard, Settings, User, Sun, Moon } from 'lucide-react';
 import { generateId } from 'ai';
 import { useTheme } from '@/web/components/ThemeProvider';
@@ -67,7 +68,7 @@ function saveToStorage(key: string, value: unknown): void {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'chart' | 'data' | 'watchlist'>('chart');
+  const [activeTab, setActiveTab] = useState<'chart' | 'data' | 'watchlist' | 'quant'>('chart');
   const [chartData, setChartData] = useState<Record<string, unknown> | null>(null);
   const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
   const [isLoading, setIsLoading] = useState(false);
@@ -78,7 +79,7 @@ export default function Home() {
   // Restore state from localStorage after hydration
   useEffect(() => {
     const savedTab = loadFromStorage<string>(STORAGE_KEYS.activeTab, 'chart');
-    if (savedTab === 'chart' || savedTab === 'data' || savedTab === 'watchlist') {
+    if (savedTab === 'chart' || savedTab === 'data' || savedTab === 'watchlist' || savedTab === 'quant') {
       setActiveTab(savedTab);
     }
 
@@ -317,13 +318,32 @@ export default function Home() {
         </div>
 
         <nav className="flex-1 flex flex-col gap-6 w-full items-center">
-          <button className="p-3 text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30 rounded-xl relative group">
+          <button
+            onClick={() => setActiveTab('chart')}
+            className={`p-3 rounded-xl relative group transition-all ${
+              activeTab !== 'quant'
+                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
+                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
+            }`}
+          >
             <LayoutDashboard className="w-5 h-5" />
-            <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
+            {activeTab !== 'quant' && (
+              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
+            )}
           </button>
 
-          <button className="p-3 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 rounded-xl transition-all">
+          <button
+            onClick={() => setActiveTab('quant')}
+            className={`p-3 rounded-xl relative group transition-all ${
+              activeTab === 'quant'
+                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
+                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
+            }`}
+          >
             <BarChart2 className="w-5 h-5" />
+            {activeTab === 'quant' && (
+              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
+            )}
           </button>
 
           <button className="p-3 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 rounded-xl transition-all">
@@ -377,6 +397,12 @@ export default function Home() {
               >
                 行情
               </button>
+              <button
+                onClick={() => setActiveTab('quant')}
+                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'quant' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
+              >
+                量化
+              </button>
             </div>
           </div>
 
@@ -406,7 +432,9 @@ export default function Home() {
 
         {/* Content Area */}
         <div className="flex-1 p-4 overflow-hidden relative z-10 font-mono">
-          {activeTab === 'data' && selectedStock ? (
+          {activeTab === 'quant' ? (
+            <QuantStrategy initialStock={selectedStock} />
+          ) : activeTab === 'data' && selectedStock ? (
             <StockDetail
               code={selectedStock.code}
               name={selectedStock.name}
