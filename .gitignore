@@ -28,8 +28,9 @@ package-lock.json
 *.swp
 *.swo
 
-# Docs (auto-generated)
-/docs
+# Docs (auto-generated, except assets)
+/docs/*
+!/docs/assets
 
 # OS files
 .DS_Store
