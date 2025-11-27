@@ -3,6 +3,15 @@ import { ChatOpenAI } from "@langchain/openai";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { search, SafeSearchType } from "duck-duck-scrape";
+import {
+  macd, rsi, bollingerBands, kdj, maCross,
+  type OHLCVItem,
+} from "@/web/lib/indicators";
+import {
+  runBacktest,
+  macdToSignals, rsiToSignals, bollingerToSignals, kdjToSignals, maCrossToSignals,
+  type BacktestConfig,
+} from "@/web/lib/backtest";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -167,48 +176,70 @@ const generateEchartsConfig = tool(
   }
 );
 
+/**
+ * Fetch kline data from East Money and parse into OHLCVItem[].
+ * Reusable helper for queryStockKline, backtestStrategy, etc.
+ */
+async function fetchKlineData(
+  symbol: string,
+  period: 'daily' | 'weekly' | 'monthly' = 'daily',
+  days = 30,
+): Promise<{ items: OHLCVItem[]; name: string; symbol: string; code: string } | string> {
+  const parsed = parseSecid(symbol);
+  if (typeof parsed === 'string') return parsed;
+
+  const { secid, prefix, code } = parsed;
+  const kltMap: Record<string, string> = { daily: '101', weekly: '102', monthly: '103' };
+  const klt = kltMap[period] || '101';
+
+  const url = `http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=${klt}&fqt=1&end=20500101&lmt=${days}`;
+  const response = await fetch(url, {
+    headers: { 'Referer': 'https://quote.eastmoney.com' },
+  });
+  const json = await response.json() as {
+    data?: { code?: string; name?: string; klines?: string[] };
+  };
+
+  if (!json.data || !json.data.klines || json.data.klines.length === 0) {
+    return `No kline data found for symbol ${symbol}.`;
+  }
+
+  const items: OHLCVItem[] = json.data.klines.map((line: string) => {
+    const parts = line.split(',');
+    return {
+      date: parts[0],
+      open: parseFloat(parts[1]),
+      close: parseFloat(parts[2]),
+      high: parseFloat(parts[3]),
+      low: parseFloat(parts[4]),
+      volume: parseFloat(parts[5]),
+    };
+  });
+
+  return {
+    items,
+    name: json.data.name || '',
+    symbol: `${prefix}${code}`,
+    code: json.data.code || '',
+  };
+}
+
 const queryStockKline = tool(
   async ({ symbol, period }: { symbol: string; period?: string }) => {
     try {
-      const parsed = parseSecid(symbol);
-      if (typeof parsed === 'string') return parsed;
+      const result = await fetchKlineData(symbol, (period as 'daily' | 'weekly' | 'monthly') || 'daily', 30);
+      if (typeof result === 'string') return result;
 
-      const { secid, prefix, code } = parsed;
-      const kltMap: Record<string, string> = { daily: '101', weekly: '102', monthly: '103' };
-      const klt = kltMap[period || 'daily'] || '101';
-
-      const url = `http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=${klt}&fqt=1&end=20500101&lmt=30`;
-      const response = await fetch(url);
-      const json = await response.json() as {
-        data?: {
-          code?: string;
-          name?: string;
-          klines?: string[];
-        };
-      };
-
-      if (!json.data || !json.data.klines || json.data.klines.length === 0) {
-        return `No kline data found for symbol ${symbol}.`;
-      }
-
-      const klines = json.data.klines.map((line: string) => {
-        const parts = line.split(',');
-        return {
-          date: parts[0],
-          open: parseFloat(parts[1]),
-          close: parseFloat(parts[2]),
-          high: parseFloat(parts[3]),
-          low: parseFloat(parts[4]),
-          volume: parseInt(parts[5], 10),
-          turnover: parseFloat(parts[6]),
-          amplitude: parts[7],
-        };
-      });
+      const klines = result.items.map(item => ({
+        ...item,
+        turnover: 0,
+        amplitude: '',
+      }));
 
       return JSON.stringify({
-        symbol: `${prefix}${code}`,
-        name: json.data.name || '',
-        code: json.data.code || '',
+        symbol: result.symbol,
+        name: result.name,
+        code: result.code,
         period: period || 'daily',
         count: klines.length,
         klines,
@@ -228,6 +259,171 @@ const queryStockKline = tool(
   }
 );
 
+/**
+ * Compute indicator signals for a given strategy.
+ */
+function computeSignals(
+  items: OHLCVItem[],
+  strategy: 'macd' | 'rsi' | 'bollinger' | 'kdj' | 'maCross',
+  params?: Record<string, number>,
+) {
+  const closes = items.map(i => i.close);
+  switch (strategy) {
+    case 'macd': {
+      const result = macd(closes, params?.fast ?? 12, params?.slow ?? 26, params?.signal ?? 9);
+      return macdToSignals(result, items);
+    }
+    case 'rsi': {
+      const result = rsi(closes, params?.period ?? 14);
+      return rsiToSignals(result, items, params?.oversold ?? 30, params?.overbought ?? 70);
+    }
+    case 'bollinger': {
+      const result = bollingerBands(closes, params?.period ?? 20, params?.multiplier ?? 2);
+      return bollingerToSignals(result, items);
+    }
+    case 'kdj': {
+      const result = kdj(items, params?.period ?? 9, params?.kSmooth ?? 3, params?.dSmooth ?? 3);
+      return kdjToSignals(result, items);
+    }
+    case 'maCross': {
+      const result = maCross(items, params?.shortPeriod ?? 5, params?.longPeriod ?? 20);
+      return maCrossToSignals(result, items);
+    }
+  }
+}
+
+const backtestStrategy = tool(
+  async ({ symbol, strategy, params, period, days }: {
+    symbol: string;
+    strategy: 'macd' | 'rsi' | 'bollinger' | 'kdj' | 'maCross';
+    params?: Record<string, number>;
+    period?: 'daily' | 'weekly' | 'monthly';
+    days?: number;
+  }) => {
+    try {
+      const result = await fetchKlineData(symbol, period || 'daily', days || 120);
+      if (typeof result === 'string') return result;
+
+      const signals = computeSignals(result.items, strategy, params);
+      const backtestResult = runBacktest(result.items, signals);
+
+      return JSON.stringify({
+        symbol: result.symbol,
+        name: result.name,
+        strategy,
+        params: params || {},
+        dataPoints: result.items.length,
+        metrics: backtestResult.metrics,
+        totalTrades: backtestResult.trades.length,
+        trades: backtestResult.trades.slice(-10), // last 10 trades for context
+      });
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+      return `Error running backtest: ${errorMessage}`;
+    }
+  },
+  {
+    name: "backtest_strategy",
+    description: "Run a backtest for a trading strategy on a specific stock. Returns performance metrics including Sharpe ratio, max drawdown, win rate, and total return.",
+    schema: z.object({
+      symbol: z.string().describe("Stock symbol (e.g., sh600519, sz300308)"),
+      strategy: z.enum(['macd', 'rsi', 'bollinger', 'kdj', 'maCross']).describe("Strategy type"),
+      params: z.record(z.string(), z.number()).optional().describe("Strategy parameters (e.g., {fast: 12, slow: 26, signal: 9} for MACD)"),
+      period: z.enum(['daily', 'weekly', 'monthly']).optional().describe("Data period"),
+      days: z.number().optional().describe("Data range in days/weeks/months"),
+    }),
+  }
+);
+
+const optimizeStrategy = tool(
+  async ({ symbol, strategy, paramRanges, period, days }: {
+    symbol: string;
+    strategy: 'macd' | 'rsi' | 'bollinger' | 'kdj' | 'maCross';
+    paramRanges: Record<string, { min: number; max: number; step: number }>;
+    period?: 'daily' | 'weekly' | 'monthly';
+    days?: number;
+  }) => {
+    try {
+      const result = await fetchKlineData(symbol, period || 'daily', days || 120);
+      if (typeof result === 'string') return result;
+
+      // Generate all parameter combinations
+      const paramNames = Object.keys(paramRanges);
+      const paramValues: number[][] = paramNames.map(name => {
+        const { min, max, step } = paramRanges[name];
+        const values: number[] = [];
+        for (let v = min; v <= max; v += step) values.push(+v.toFixed(6));
+        return values;
+      });
+
+      // Cartesian product with limit
+      const MAX_COMBOS = 50;
+      const combos: Record<string, number>[] = [];
+      function generate(idx: number, current: Record<string, number>) {
+        if (combos.length >= MAX_COMBOS) return;
+        if (idx === paramNames.length) {
+          combos.push({ ...current });
+          return;
+        }
+        for (const val of paramValues[idx]) {
+          if (combos.length >= MAX_COMBOS) return;
+          current[paramNames[idx]] = val;
+          generate(idx + 1, current);
+        }
+      }
+      generate(0, {});
+
+      // Run backtest for each combo
+      const results: { params: Record<string, number>; sharpe: number; totalReturn: number; maxDrawdown: number; winRate: number; trades: number }[] = [];
+      for (const combo of combos) {
+        try {
+          const signals = computeSignals(result.items, strategy, combo);
+          const bt = runBacktest(result.items, signals);
+          results.push({
+            params: combo,
+            sharpe: bt.metrics.sharpeRatio,
+            totalReturn: bt.metrics.totalReturn,
+            maxDrawdown: bt.metrics.maxDrawdown,
+            winRate: bt.metrics.winRate,
+            trades: bt.trades.length,
+          });
+        } catch {
+          // Skip failed combos
+        }
+      }
+
+      // Sort by Sharpe ratio descending
+      results.sort((a, b) => b.sharpe - a.sharpe);
+
+      return JSON.stringify({
+        symbol: result.symbol,
+        name: result.name,
+        strategy,
+        totalCombinations: combos.length,
+        topResults: results.slice(0, 5),
+      });
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+      return `Error optimizing strategy: ${errorMessage}`;
+    }
+  },
+  {
+    name: "optimize_strategy",
+    description: "Optimize strategy parameters by grid search. Tests multiple parameter combinations and returns the best results ranked by Sharpe ratio.",
+    schema: z.object({
+      symbol: z.string().describe("Stock symbol (e.g., sh600519, sz300308)"),
+      strategy: z.enum(['macd', 'rsi', 'bollinger', 'kdj', 'maCross']).describe("Strategy type"),
+      paramRanges: z.record(z.string(), z.object({
+        min: z.number(),
+        max: z.number(),
+        step: z.number(),
+      })).describe("Parameter ranges for grid search"),
+      period: z.enum(['daily', 'weekly', 'monthly']).optional().describe("Data period"),
+      days: z.number().optional().describe("Data range in days/weeks/months"),
+    }),
+  }
+);
+
 export const createChatAgent = () => {
   const llm = new ChatOpenAI({
     modelName: process.env.OPENAI_MODEL_NAME || "anthropic/claude-3.7-sonnet",
@@ -241,7 +437,7 @@ export const createChatAgent = () => {
   const agent = createDeepAgent({
     name: "stock-mind-ai",
     model: llm,
-    tools: [duckduckgoSearch, queryStockData, queryStockKline, generateEchartsConfig],
+    tools: [duckduckgoSearch, queryStockData, queryStockKline, generateEchartsConfig, backtestStrategy, optimizeStrategy],
     systemPrompt: `你是一个专业的金融和股票市场AI助手。请始终使用中文回复用户。
 
 工具使用指南：
@@ -249,6 +445,8 @@ export const createChatAgent = () => {
 - 使用 "query_stock_kline" 查询历史K线/蜡烛图数据（日K、周K、月K）。代码格式同上。返回最近30条OHLCV数据。
 - 使用 "internet_search" 搜索新闻、事件和金融相关信息。
 - 使用 "generate_echarts_config" 在有数据需要展示时生成图表配置进行可视化。传入的必须是有效的ECharts option对象。
+- 使用 "backtest_strategy" 对指定股票运行策略回测，获取夏普比率、最大回撤、胜率等指标。可选策略：macd/rsi/bollinger/kdj/maCross。
+- 使用 "optimize_strategy" 对策略参数进行网格搜索优化，找到最优参数组合。
 
 回复规范：
 - 绝对不要在回复中直接输出或复读工具返回的原始JSON数据。

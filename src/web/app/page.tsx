@@ -6,7 +6,9 @@ import StockChart from '@/web/components/StockChart';
 import StockWatchlist from '@/web/components/StockWatchlist';
 import StockDetail from '@/web/components/StockDetail';
 import QuantStrategy from '@/web/components/QuantStrategy';
-import { Activity, BarChart2, Bell, LayoutDashboard, Settings, User, Sun, Moon } from 'lucide-react';
+import BacktestPanel from '@/web/components/BacktestPanel';
+import StrategyLab from '@/web/components/StrategyLab';
+import { Activity, BarChart2, Bell, FlaskConical, LayoutDashboard, Settings, TrendingUp, User, Sun, Moon } from 'lucide-react';
 import { generateId } from 'ai';
 import { useTheme } from '@/web/components/ThemeProvider';
 
@@ -68,7 +70,7 @@ function saveToStorage(key: string, value: unknown): void {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'chart' | 'data' | 'watchlist' | 'quant'>('chart');
+  const [activeTab, setActiveTab] = useState<'chart' | 'data' | 'watchlist' | 'quant' | 'backtest' | 'lab'>('chart');
   const [chartData, setChartData] = useState<Record<string, unknown> | null>(null);
   const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
   const [isLoading, setIsLoading] = useState(false);
@@ -79,7 +81,7 @@ export default function Home() {
   // Restore state from localStorage after hydration
   useEffect(() => {
     const savedTab = loadFromStorage<string>(STORAGE_KEYS.activeTab, 'chart');
-    if (savedTab === 'chart' || savedTab === 'data' || savedTab === 'watchlist' || savedTab === 'quant') {
+    if (savedTab === 'chart' || savedTab === 'data' || savedTab === 'watchlist' || savedTab === 'quant' || savedTab === 'backtest' || savedTab === 'lab') {
       setActiveTab(savedTab);
     }
 
@@ -317,17 +319,17 @@ export default function Home() {
           <Activity className="w-6 h-6 text-blue-600 dark:text-cyan-400" />
         </div>
 
-        <nav className="flex-1 flex flex-col gap-6 w-full items-center">
+        <nav className="flex-1 flex flex-col gap-4 w-full items-center">
           <button
             onClick={() => setActiveTab('chart')}
             className={`p-3 rounded-xl relative group transition-all ${
-              activeTab !== 'quant'
+              activeTab === 'chart' || activeTab === 'data' || activeTab === 'watchlist'
                 ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
                 : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
             }`}
           >
             <LayoutDashboard className="w-5 h-5" />
-            {activeTab !== 'quant' && (
+            {(activeTab === 'chart' || activeTab === 'data' || activeTab === 'watchlist') && (
               <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
             )}
           </button>
@@ -342,6 +344,34 @@ export default function Home() {
           >
             <BarChart2 className="w-5 h-5" />
             {activeTab === 'quant' && (
+              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('backtest')}
+            className={`p-3 rounded-xl relative group transition-all ${
+              activeTab === 'backtest'
+                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
+                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
+            }`}
+          >
+            <TrendingUp className="w-5 h-5" />
+            {activeTab === 'backtest' && (
+              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('lab')}
+            className={`p-3 rounded-xl relative group transition-all ${
+              activeTab === 'lab'
+                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
+                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
+            }`}
+          >
+            <FlaskConical className="w-5 h-5" />
+            {activeTab === 'lab' && (
               <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
             )}
           </button>
@@ -403,6 +433,18 @@ export default function Home() {
               >
                 量化
               </button>
+              <button
+                onClick={() => setActiveTab('backtest')}
+                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'backtest' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
+              >
+                回测
+              </button>
+              <button
+                onClick={() => setActiveTab('lab')}
+                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'lab' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
+              >
+                实验室
+              </button>
             </div>
           </div>
 
@@ -432,7 +474,11 @@ export default function Home() {
 
         {/* Content Area */}
         <div className="flex-1 p-4 overflow-hidden relative z-10 font-mono">
-          {activeTab === 'quant' ? (
+          {activeTab === 'lab' ? (
+            <StrategyLab initialStock={selectedStock} />
+          ) : activeTab === 'backtest' ? (
+            <BacktestPanel initialStock={selectedStock} />
+          ) : activeTab === 'quant' ? (
             <QuantStrategy initialStock={selectedStock} />
           ) : activeTab === 'data' && selectedStock ? (
             <StockDetail

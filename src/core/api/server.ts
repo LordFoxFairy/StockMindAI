@@ -1,4 +1,17 @@
 import { createChatAgent } from "@/core/agent/chatAgent";
+import {
+  macd, rsi, bollingerBands, kdj, maCross,
+  type OHLCVItem,
+} from "@/web/lib/indicators";
+import {
+  runBacktest,
+  macdToSignals, rsiToSignals, bollingerToSignals, kdjToSignals, maCrossToSignals,
+  type BacktestConfig,
+} from "@/web/lib/backtest";
+import {
+  calculateRiskMetrics, monteCarloSimulation, stressTest, dailyReturns,
+  BUILT_IN_SCENARIOS,
+} from "@/web/lib/risk";
 
 const PORT = process.env.API_PORT || 3135;
 
@@ -90,6 +103,61 @@ function parseSectorItem(item: any): any {
     change: item.f4 === '-' ? 0 : Number(item.f4) || 0,
     price: item.f2 === '-' ? 0 : Number(item.f2) || 0,
   };
+}
+
+/**
+ * Fetch kline data from East Money and parse into OHLCVItem[].
+ */
+async function fetchKlineOHLCV(code: string, days: number, klt: number): Promise<OHLCVItem[]> {
+  const secid = resolveSecid(code);
+  const apiUrl = `http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=${klt}&fqt=1&end=20500101&lmt=${days}`;
+  const json = await fetchEastMoney(apiUrl);
+  return (json?.data?.klines || []).map((line: string) => {
+    const parts = line.split(',');
+    return {
+      date: parts[0],
+      open: parseFloat(parts[1]),
+      close: parseFloat(parts[2]),
+      high: parseFloat(parts[3]),
+      low: parseFloat(parts[4]),
+      volume: parseFloat(parts[5]),
+    };
+  });
+}
+
+/**
+ * Compute indicator signals for a given strategy (server-side version for API routes).
+ */
+function computeSignalsServer(
+  items: OHLCVItem[],
+  strategy: string,
+  params?: Record<string, number>,
+) {
+  const closes = items.map(i => i.close);
+  switch (strategy) {
+    case 'macd': {
+      const result = macd(closes, params?.fast ?? 12, params?.slow ?? 26, params?.signal ?? 9);
+      return macdToSignals(result, items);
+    }
+    case 'rsi': {
+      const result = rsi(closes, params?.period ?? 14);
+      return rsiToSignals(result, items, params?.oversold ?? 30, params?.overbought ?? 70);
+    }
+    case 'bollinger': {
+      const result = bollingerBands(closes, params?.period ?? 20, params?.multiplier ?? 2);
+      return bollingerToSignals(result, items);
+    }
+    case 'kdj': {
+      const result = kdj(items, params?.period ?? 9, params?.kSmooth ?? 3, params?.dSmooth ?? 3);
+      return kdjToSignals(result, items);
+    }
+    case 'maCross': {
+      const result = maCross(items, params?.shortPeriod ?? 5, params?.longPeriod ?? 20);
+      return maCrossToSignals(result, items);
+    }
+    default:
+      throw new Error(`Unknown strategy: ${strategy}`);
+  }
 }
 
 console.log(`Starting Bun API server on port ${PORT}...`);
@@ -407,6 +475,202 @@ Bun.serve({
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error';
         console.error("Error in quote route:", err);
+        return new Response(JSON.stringify({ error: errorMessage }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // =========================================================================
+    // POST /api/backtest — 策略回测 (backtest a strategy)
+    // =========================================================================
+    if (req.method === "POST" && url.pathname === "/api/backtest") {
+      try {
+        const body = await req.json();
+        const { code, strategy, params, period, days, config } = body as {
+          code: string;
+          strategy: string;
+          params?: Record<string, number>;
+          period?: number;
+          days?: number;
+          config?: BacktestConfig;
+        };
+
+        if (!code || !strategy) {
+          return new Response(JSON.stringify({ error: "Missing required fields: code, strategy" }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const klt = period || 101;
+        const lmt = days || 120;
+        const items = await fetchKlineOHLCV(code, lmt, klt);
+        if (items.length === 0) {
+          return new Response(JSON.stringify({ error: `No kline data found for ${code}` }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const signals = computeSignalsServer(items, strategy, params);
+        const result = runBacktest(items, signals, config);
+
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error("Error in backtest route:", err);
+        return new Response(JSON.stringify({ error: errorMessage }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // =========================================================================
+    // POST /api/risk — 风险分析 (risk analysis)
+    // =========================================================================
+    if (req.method === "POST" && url.pathname === "/api/risk") {
+      try {
+        const body = await req.json();
+        const { code, period, days } = body as {
+          code: string;
+          period?: number;
+          days?: number;
+        };
+
+        if (!code) {
+          return new Response(JSON.stringify({ error: "Missing required field: code" }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const klt = period || 101;
+        const lmt = days || 250;
+        const items = await fetchKlineOHLCV(code, lmt, klt);
+        if (items.length < 2) {
+          return new Response(JSON.stringify({ error: `Not enough data for risk analysis on ${code}` }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const closes = items.map(i => i.close);
+        const returns = dailyReturns(closes);
+        const riskMetrics = calculateRiskMetrics(returns);
+        const monteCarlo = monteCarloSimulation(returns, 60, 500, closes[closes.length - 1]);
+        const stress = stressTest(closes[closes.length - 1], returns);
+
+        return new Response(JSON.stringify({
+          code,
+          dataPoints: items.length,
+          riskMetrics,
+          monteCarlo,
+          stressTest: stress,
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error("Error in risk route:", err);
+        return new Response(JSON.stringify({ error: errorMessage }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // =========================================================================
+    // POST /api/optimize — 策略参数优化 (strategy parameter optimization)
+    // =========================================================================
+    if (req.method === "POST" && url.pathname === "/api/optimize") {
+      try {
+        const body = await req.json();
+        const { code, strategy, paramRanges, period, days } = body as {
+          code: string;
+          strategy: string;
+          paramRanges: Record<string, { min: number; max: number; step: number }>;
+          period?: number;
+          days?: number;
+        };
+
+        if (!code || !strategy || !paramRanges) {
+          return new Response(JSON.stringify({ error: "Missing required fields: code, strategy, paramRanges" }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const klt = period || 101;
+        const lmt = days || 120;
+        const items = await fetchKlineOHLCV(code, lmt, klt);
+        if (items.length === 0) {
+          return new Response(JSON.stringify({ error: `No kline data found for ${code}` }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Generate parameter combinations with limit
+        const MAX_COMBOS = 50;
+        const paramNames = Object.keys(paramRanges);
+        const paramValues: number[][] = paramNames.map(name => {
+          const { min, max, step } = paramRanges[name];
+          const values: number[] = [];
+          for (let v = min; v <= max; v += step) values.push(+v.toFixed(6));
+          return values;
+        });
+
+        const combos: Record<string, number>[] = [];
+        function generateCombos(idx: number, current: Record<string, number>) {
+          if (combos.length >= MAX_COMBOS) return;
+          if (idx === paramNames.length) {
+            combos.push({ ...current });
+            return;
+          }
+          for (const val of paramValues[idx]) {
+            if (combos.length >= MAX_COMBOS) return;
+            current[paramNames[idx]] = val;
+            generateCombos(idx + 1, current);
+          }
+        }
+        generateCombos(0, {});
+
+        const results: { params: Record<string, number>; sharpe: number; totalReturn: number; maxDrawdown: number; winRate: number; trades: number }[] = [];
+        for (const combo of combos) {
+          try {
+            const signals = computeSignalsServer(items, strategy, combo);
+            const bt = runBacktest(items, signals);
+            results.push({
+              params: combo,
+              sharpe: bt.metrics.sharpeRatio,
+              totalReturn: bt.metrics.totalReturn,
+              maxDrawdown: bt.metrics.maxDrawdown,
+              winRate: bt.metrics.winRate,
+              trades: bt.trades.length,
+            });
+          } catch {
+            // Skip failed combos
+          }
+        }
+
+        results.sort((a, b) => b.sharpe - a.sharpe);
+
+        return new Response(JSON.stringify({
+          code,
+          strategy,
+          totalCombinations: combos.length,
+          topResults: results.slice(0, 10),
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error("Error in optimize route:", err);
         return new Response(JSON.stringify({ error: errorMessage }), {
           status: 500,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
