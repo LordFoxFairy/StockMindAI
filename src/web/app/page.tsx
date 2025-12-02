@@ -8,7 +8,9 @@ import StockDetail from '@/web/components/StockDetail';
 import QuantStrategy from '@/web/components/QuantStrategy';
 import BacktestPanel from '@/web/components/BacktestPanel';
 import StrategyLab from '@/web/components/StrategyLab';
-import { Activity, BarChart2, Bell, FlaskConical, LayoutDashboard, Settings, TrendingUp, User, Sun, Moon } from 'lucide-react';
+import PredictionPanel from '@/web/components/PredictionPanel';
+import ComparePanel from '@/web/components/ComparePanel';
+import { Activity, BarChart2, Bell, FlaskConical, GitCompareArrows, LayoutDashboard, Settings, Target, TrendingUp, User, Sun, Moon } from 'lucide-react';
 import { generateId } from 'ai';
 import { useTheme } from '@/web/components/ThemeProvider';
 
@@ -70,7 +72,7 @@ function saveToStorage(key: string, value: unknown): void {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'chart' | 'data' | 'watchlist' | 'quant' | 'backtest' | 'lab'>('chart');
+  const [activeTab, setActiveTab] = useState<'chart' | 'data' | 'watchlist' | 'quant' | 'backtest' | 'lab' | 'predict' | 'compare'>('chart');
   const [chartData, setChartData] = useState<Record<string, unknown> | null>(null);
   const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
   const [isLoading, setIsLoading] = useState(false);
@@ -81,7 +83,7 @@ export default function Home() {
   // Restore state from localStorage after hydration
   useEffect(() => {
     const savedTab = loadFromStorage<string>(STORAGE_KEYS.activeTab, 'chart');
-    if (savedTab === 'chart' || savedTab === 'data' || savedTab === 'watchlist' || savedTab === 'quant' || savedTab === 'backtest' || savedTab === 'lab') {
+    if (savedTab === 'chart' || savedTab === 'data' || savedTab === 'watchlist' || savedTab === 'quant' || savedTab === 'backtest' || savedTab === 'lab' || savedTab === 'predict' || savedTab === 'compare') {
       setActiveTab(savedTab);
     }
 
@@ -376,6 +378,34 @@ export default function Home() {
             )}
           </button>
 
+          <button
+            onClick={() => setActiveTab('predict')}
+            className={`p-3 rounded-xl relative group transition-all ${
+              activeTab === 'predict'
+                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
+                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
+            }`}
+          >
+            <Target className="w-5 h-5" />
+            {activeTab === 'predict' && (
+              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('compare')}
+            className={`p-3 rounded-xl relative group transition-all ${
+              activeTab === 'compare'
+                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
+                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
+            }`}
+          >
+            <GitCompareArrows className="w-5 h-5" />
+            {activeTab === 'compare' && (
+              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
+            )}
+          </button>
+
           <button className="p-3 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 rounded-xl transition-all">
             <Bell className="w-5 h-5" />
           </button>
@@ -445,6 +475,18 @@ export default function Home() {
               >
                 实验室
               </button>
+              <button
+                onClick={() => setActiveTab('predict')}
+                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'predict' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
+              >
+                预测
+              </button>
+              <button
+                onClick={() => setActiveTab('compare')}
+                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'compare' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
+              >
+                对比
+              </button>
             </div>
           </div>
 
@@ -478,6 +520,10 @@ export default function Home() {
             <StrategyLab initialStock={selectedStock} />
           ) : activeTab === 'backtest' ? (
             <BacktestPanel initialStock={selectedStock} />
+          ) : activeTab === 'predict' ? (
+            <PredictionPanel initialStock={selectedStock} />
+          ) : activeTab === 'compare' ? (
+            <ComparePanel initialStock={selectedStock} />
           ) : activeTab === 'quant' ? (
             <QuantStrategy initialStock={selectedStock} />
           ) : activeTab === 'data' && selectedStock ? (

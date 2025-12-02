@@ -12,6 +12,7 @@ import {
   calculateRiskMetrics, monteCarloSimulation, stressTest, dailyReturns,
   BUILT_IN_SCENARIOS,
 } from "@/web/lib/risk";
+import { runPrediction } from "@/web/lib/predict";
 
 const PORT = process.env.API_PORT || 3135;
 
@@ -678,6 +679,56 @@ Bun.serve({
       }
     }
 
+    // =========================================================================
+    // POST /api/predict — AI 预测分析 (multi-indicator prediction)
+    // =========================================================================
+    if (req.method === "POST" && url.pathname === "/api/predict") {
+      try {
+        const body = await req.json();
+        const { code, period, days: reqDays } = body as {
+          code: string;
+          period?: number;
+          days?: number;
+        };
+
+        if (!code) {
+          return new Response(JSON.stringify({ error: "Missing required field: code" }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const klt = period || 101;
+        const lmt = reqDays || 120;
+        const items = await fetchKlineOHLCV(code, lmt, klt);
+        if (items.length < 30) {
+          return new Response(JSON.stringify({ error: `Not enough data for prediction on ${code} (need ≥30, got ${items.length})` }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const prediction = runPrediction(items);
+        const currentPrice = items[items.length - 1].close;
+
+        return new Response(JSON.stringify({
+          code,
+          currentPrice,
+          dataPoints: items.length,
+          ...prediction,
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error("Error in predict route:", err);
+        return new Response(JSON.stringify({ error: errorMessage }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
     if (req.method === "POST" && url.pathname === "/api/chat") {
       try {
         const { messages } = await req.json();
@@ -690,7 +741,7 @@ Bun.serve({
         // =========================================================================
         // STEP 2: GENERATE STREAM
         // =========================================================================
-        const stream = await agent.stream({ messages }, { streamMode: "messages", recursionLimit: 25 });
+        const stream = await agent.stream({ messages }, { streamMode: "messages", recursionLimit: 80 });
 
         // =========================================================================
         // STEP 3: FORMAT STREAM FOR CLIENT

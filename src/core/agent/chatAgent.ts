@@ -12,6 +12,7 @@ import {
   macdToSignals, rsiToSignals, bollingerToSignals, kdjToSignals, maCrossToSignals,
   type BacktestConfig,
 } from "@/web/lib/backtest";
+import { runPrediction } from "@/web/lib/predict";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -424,6 +425,57 @@ const optimizeStrategy = tool(
   }
 );
 
+const predictStock = tool(
+  async ({ symbol, timeframe }: {
+    symbol: string;
+    timeframe?: 'short' | 'medium' | 'long';
+  }) => {
+    try {
+      // Map timeframe to data range
+      const daysMap: Record<string, number> = { short: 120, medium: 250, long: 500 };
+      const days = daysMap[timeframe || 'medium'] || 250;
+
+      const result = await fetchKlineData(symbol, 'daily', days);
+      if (typeof result === 'string') return result;
+
+      if (result.items.length < 30) {
+        return `Not enough data for prediction (need at least 30 data points, got ${result.items.length}).`;
+      }
+
+      const prediction = runPrediction(result.items);
+      const currentPrice = result.items[result.items.length - 1].close;
+
+      return JSON.stringify({
+        symbol: result.symbol,
+        name: result.name,
+        currentPrice,
+        compositeScore: prediction.compositeScore,
+        confidence: prediction.confidence,
+        trend: prediction.trend,
+        signals: prediction.signals.map(s => ({
+          name: s.name,
+          score: s.score,
+          signal: s.signal,
+          description: s.description,
+        })),
+        supportResistance: prediction.supportResistance,
+        summary: prediction.summary,
+      });
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+      return `Error predicting stock: ${errorMessage}`;
+    }
+  },
+  {
+    name: "predict_stock",
+    description: "对指定股票进行多维度技术分析预测。综合MACD/RSI/布林带/KDJ/均线五大指标，输出综合评分(-100到+100)、趋势方向、支撑阻力位和各指标信号。",
+    schema: z.object({
+      symbol: z.string().describe("Stock symbol"),
+      timeframe: z.enum(['short', 'medium', 'long']).optional().describe("Analysis timeframe"),
+    }),
+  }
+);
+
 export const createChatAgent = () => {
   const llm = new ChatOpenAI({
     modelName: process.env.OPENAI_MODEL_NAME || "anthropic/claude-3.7-sonnet",
@@ -437,7 +489,7 @@ export const createChatAgent = () => {
   const agent = createDeepAgent({
     name: "stock-mind-ai",
     model: llm,
-    tools: [duckduckgoSearch, queryStockData, queryStockKline, generateEchartsConfig, backtestStrategy, optimizeStrategy],
+    tools: [duckduckgoSearch, queryStockData, queryStockKline, generateEchartsConfig, backtestStrategy, optimizeStrategy, predictStock],
     systemPrompt: `你是一个专业的金融和股票市场AI助手。请始终使用中文回复用户。
 
 工具使用指南：
@@ -447,6 +499,7 @@ export const createChatAgent = () => {
 - 使用 "generate_echarts_config" 在有数据需要展示时生成图表配置进行可视化。传入的必须是有效的ECharts option对象。
 - 使用 "backtest_strategy" 对指定股票运行策略回测，获取夏普比率、最大回撤、胜率等指标。可选策略：macd/rsi/bollinger/kdj/maCross。
 - 使用 "optimize_strategy" 对策略参数进行网格搜索优化，找到最优参数组合。
+- 使用 "predict_stock" 对股票进行多指标综合预测分析，返回综合评分、趋势方向、支撑/阻力位和20日价格区间预测。
 
 回复规范：
 - 绝对不要在回复中直接输出或复读工具返回的原始JSON数据。
