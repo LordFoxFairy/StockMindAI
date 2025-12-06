@@ -2,7 +2,7 @@ import { createDeepAgent, CompositeBackend, StateBackend, StoreBackend } from "d
 import { ChatOpenAI } from "@langchain/openai";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { search, SafeSearchType } from "duck-duck-scrape";
+import { search, searchNews, SafeSearchType, SearchTimeType } from "duck-duck-scrape";
 import {
   macd, rsi, bollingerBands, kdj, maCross,
   type OHLCVItem,
@@ -476,6 +476,216 @@ const predictStock = tool(
   }
 );
 
+const searchNewsTool = tool(
+  async ({ query, timeRange }: { query: string; timeRange?: string }) => {
+    let lastError = '';
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        if (attempt > 0) {
+          await sleep(1000 * Math.pow(2, attempt));
+        }
+        const timeMap: Record<string, SearchTimeType> = {
+          day: SearchTimeType.DAY,
+          week: SearchTimeType.WEEK,
+          month: SearchTimeType.MONTH,
+        };
+        const results = await searchNews(query, {
+          locale: 'zh-cn',
+          ...(timeRange && timeMap[timeRange] ? { time: timeMap[timeRange] } : {}),
+        });
+        const items = results.results.slice(0, 8).map(r => ({
+          title: r.title,
+          url: r.url,
+          excerpt: r.excerpt,
+          date: new Date(r.date * 1000).toISOString().split('T')[0],
+          source: r.syndicate,
+        }));
+        return JSON.stringify(items);
+      } catch (e: unknown) {
+        lastError = e instanceof Error ? e.message : 'Unknown error';
+        if (lastError.includes('anomaly') || lastError.includes('rate limit')) {
+          if (attempt < MAX_RETRIES) continue;
+        } else {
+          break;
+        }
+      }
+    }
+    return `News search is temporarily unavailable (${lastError}). Please try a different query.`;
+  },
+  {
+    name: "search_news",
+    description: "搜索财经新闻和资讯，支持按时间范围筛选。适合搜索行业动态、宏观经济新闻、政策变化等。",
+    schema: z.object({
+      query: z.string().describe("搜索关键词"),
+      timeRange: z.enum(['day', 'week', 'month']).optional().describe("时间范围：day(一天内)、week(一周内)、month(一月内)"),
+    }),
+  }
+);
+
+const searchStockInfo = tool(
+  async ({ keyword }: { keyword: string }) => {
+    try {
+      // Step 1: Search for matching stocks
+      const searchUrl = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(keyword)}&type=14&count=5`;
+      const searchRes = await fetch(searchUrl, {
+        headers: { 'Referer': 'https://quote.eastmoney.com' },
+      });
+      const searchJson = await searchRes.json() as {
+        QuotationCodeTable?: { Data?: Array<{ Code: string; Name: string; MktNum: string; SecurityTypeName: string }> };
+      };
+
+      const suggestions = searchJson?.QuotationCodeTable?.Data || [];
+      if (suggestions.length === 0) {
+        return `No stocks found matching "${keyword}".`;
+      }
+
+      // Step 2: Fetch quote data for each matched stock
+      const results = [];
+      for (const item of suggestions) {
+        const market = item.MktNum === '0' ? 'sz' : item.MktNum === '1' ? 'sh' : '';
+        if (!market) continue;
+
+        const secid = market === 'sz' ? `0.${item.Code}` : `1.${item.Code}`;
+        const quoteUrl = `http://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f47,f116,f117,f170,f57,f58`;
+        const quoteRes = await fetch(quoteUrl, {
+          headers: { 'Referer': 'https://quote.eastmoney.com' },
+        });
+        const quoteJson = await quoteRes.json() as { data?: Record<string, any> | null };
+        const d = quoteJson?.data;
+
+        results.push({
+          code: `${market}${item.Code}`,
+          name: item.Name,
+          market: market === 'sh' ? '上海' : '深圳',
+          type: item.SecurityTypeName || '',
+          price: d ? (d.f43 as number) / 100 : null,
+          changePercent: d ? (d.f170 as number) / 100 : null,
+          volume: d ? d.f47 : null,
+          marketCap: d ? d.f116 : null,
+        });
+      }
+
+      return JSON.stringify(results);
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+      return `Error searching stock info: ${errorMessage}`;
+    }
+  },
+  {
+    name: "search_stock_info",
+    description: "按名称、代码或关键词搜索股票信息。返回匹配股票的代码、名称、市场、价格、涨跌幅、成交量和市值。",
+    schema: z.object({
+      keyword: z.string().describe("股票名称、代码或关键词（如：茅台、银行、新能源）"),
+    }),
+  }
+);
+
+const queryStockNews = tool(
+  async ({ symbol, count }: { symbol: string; count?: number }) => {
+    try {
+      const parsed = parseSecid(symbol);
+      if (typeof parsed === 'string') return parsed;
+
+      const { code } = parsed;
+      const limit = Math.min(count || 10, 20);
+
+      const apiUrl = `https://np-listapi.eastmoney.com/comm/wap/getListInfo?cb=&client=wap&type=1&mession=&fc=${code}&count=${limit}`;
+      const response = await fetch(apiUrl, {
+        headers: {
+          'Referer': 'https://wap.eastmoney.com',
+          'User-Agent': 'Mozilla/5.0',
+        },
+      });
+      const json = await response.json() as {
+        data?: { list?: Array<{
+          title?: string;
+          showtime?: string;
+          mediaName?: string;
+          url?: string;
+          digest?: string;
+        }> };
+      };
+
+      const newsList = json?.data?.list || [];
+      const results = newsList.map(item => ({
+        title: item.title || '',
+        date: item.showtime || '',
+        source: item.mediaName || '',
+        url: item.url || '',
+        summary: item.digest || '',
+      }));
+
+      return JSON.stringify(results);
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+      return `Error fetching stock news: ${errorMessage}`;
+    }
+  },
+  {
+    name: "query_stock_news",
+    description: "查询指定股票的最新新闻和公告。输入股票代码，返回最新的新闻标题、日期、来源和摘要。",
+    schema: z.object({
+      symbol: z.string().describe("股票代码（如：sh600519、sz300308、或 600519）"),
+      count: z.number().optional().describe("返回条数，默认10条，最多20条"),
+    }),
+  }
+);
+
+const queryStockFundamentals = tool(
+  async ({ symbol }: { symbol: string }) => {
+    try {
+      const parsed = parseSecid(symbol);
+      if (typeof parsed === 'string') return parsed;
+
+      const { secid, prefix, code } = parsed;
+      const url = `http://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f57,f58,f43,f162,f163,f167,f164,f168,f114,f116,f117,f173,f183,f185,f186,f187`;
+      const response = await fetch(url, {
+        headers: { 'Referer': 'https://quote.eastmoney.com' },
+      });
+      const json = await response.json() as { data?: Record<string, any> | null };
+
+      if (!json.data) {
+        return `No data found for symbol ${symbol}.`;
+      }
+
+      const d = json.data;
+      const num = (v: any) => (v === '-' || v === undefined || v === null) ? null : Number(v) || 0;
+
+      const result = {
+        symbol: `${prefix}${code}`,
+        code: d.f57,
+        name: d.f58,
+        price: num(d.f43) !== null ? (num(d.f43) as number) / 100 : null,
+        pe: num(d.f162),
+        peStatic: num(d.f163),
+        pb: num(d.f167),
+        roe: num(d.f164),
+        turnoverRate: num(d.f168),
+        floatShares: num(d.f114),
+        totalMarketCap: num(d.f116),
+        floatMarketCap: num(d.f117),
+        roa: num(d.f173),
+        eps: num(d.f183),
+        bvps: num(d.f185),
+        ps: num(d.f186),
+        cashFlowPerShare: num(d.f187),
+      };
+
+      return JSON.stringify(result);
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+      return `Error fetching fundamentals: ${errorMessage}`;
+    }
+  },
+  {
+    name: "query_stock_fundamentals",
+    description: "查询股票基本面数据，包括PE(市盈率)、PB(市净率)、ROE(净资产收益率)、ROA、EPS(每股收益)、每股净资产、市销率、每股现金流、总市值、流通市值等指标。",
+    schema: z.object({
+      symbol: z.string().describe("股票代码（如：sh600519、sz300308、或 600519）"),
+    }),
+  }
+);
+
 export const createChatAgent = () => {
   const llm = new ChatOpenAI({
     modelName: process.env.OPENAI_MODEL_NAME || "anthropic/claude-3.7-sonnet",
@@ -489,7 +699,7 @@ export const createChatAgent = () => {
   const agent = createDeepAgent({
     name: "stock-mind-ai",
     model: llm,
-    tools: [duckduckgoSearch, queryStockData, queryStockKline, generateEchartsConfig, backtestStrategy, optimizeStrategy, predictStock],
+    tools: [duckduckgoSearch, queryStockData, queryStockKline, generateEchartsConfig, backtestStrategy, optimizeStrategy, predictStock, searchNewsTool, searchStockInfo, queryStockNews, queryStockFundamentals],
     systemPrompt: `你是一个专业的金融和股票市场AI助手。请始终使用中文回复用户。
 
 工具使用指南：
@@ -500,6 +710,13 @@ export const createChatAgent = () => {
 - 使用 "backtest_strategy" 对指定股票运行策略回测，获取夏普比率、最大回撤、胜率等指标。可选策略：macd/rsi/bollinger/kdj/maCross。
 - 使用 "optimize_strategy" 对策略参数进行网格搜索优化，找到最优参数组合。
 - 使用 "predict_stock" 对股票进行多指标综合预测分析，返回综合评分、趋势方向、支撑/阻力位和20日价格区间预测。
+- 使用 "search_news" 搜索财经新闻和行业资讯，支持按时间范围（day/week/month）筛选。
+- 使用 "search_stock_info" 按名称、代码或关键词搜索股票，获取匹配股票的基础信息和实时价格。
+- 使用 "query_stock_news" 查询指定股票的最新新闻和公告。
+- 使用 "query_stock_fundamentals" 查询股票基本面数据（PE/PB/ROE/EPS等核心指标）。
+
+搜索策略建议：
+当用户询问某只股票时，建议先用 query_stock_data 获取实时行情，再结合 query_stock_fundamentals 获取基本面，如需要可用 query_stock_news 查看最新新闻。综合分析时使用 search_news 搜索相关行业或宏观新闻。使用 search_stock_info 可以按关键词模糊搜索股票。
 
 回复规范：
 - 绝对不要在回复中直接输出或复读工具返回的原始JSON数据。

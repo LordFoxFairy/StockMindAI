@@ -729,6 +729,157 @@ Bun.serve({
       }
     }
 
+    // =========================================================================
+    // GET /api/stocks/news/:code — 个股新闻 (from East Money)
+    // =========================================================================
+    const newsMatch = url.pathname.match(/^\/api\/stocks\/news\/(.+)$/);
+    if (req.method === "GET" && newsMatch) {
+      try {
+        const code = decodeURIComponent(newsMatch[1]);
+        const count = Math.min(Math.max(1, parseInt(url.searchParams.get('count') || '10', 10)), 50);
+
+        const cacheKey = `news:${code}:${count}`;
+        const cached = getCached(cacheKey);
+        if (cached) {
+          return new Response(JSON.stringify(cached), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Resolve bare code to get numeric part
+        const numericCode = code.replace(/^(sh|sz)/i, '');
+
+        const apiUrl = `https://np-listapi.eastmoney.com/comm/wap/getListInfo?cb=&client=wap&type=1&mession=&fc=${numericCode}&count=${count}`;
+        const json = await fetchEastMoney(apiUrl);
+
+        const newsList = json?.data?.list || [];
+        const news = newsList.map((item: any) => ({
+          title: item.title || '',
+          date: item.showtime || '',
+          source: item.mediaName || '',
+          url: item.url || '',
+          summary: item.digest || '',
+        }));
+
+        const result = { code, news };
+        setCache(cacheKey, result);
+
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error("Error in stock news route:", err);
+        return new Response(JSON.stringify({ error: errorMessage }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // =========================================================================
+    // GET /api/stocks/announcements/:code — 个股公告 (from East Money)
+    // =========================================================================
+    const announcementsMatch = url.pathname.match(/^\/api\/stocks\/announcements\/(.+)$/);
+    if (req.method === "GET" && announcementsMatch) {
+      try {
+        const code = decodeURIComponent(announcementsMatch[1]);
+        const count = Math.min(Math.max(1, parseInt(url.searchParams.get('count') || '10', 10)), 50);
+
+        const cacheKey = `announcements:${code}:${count}`;
+        const cached = getCached(cacheKey);
+        if (cached) {
+          return new Response(JSON.stringify(cached), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const numericCode = code.replace(/^(sh|sz)/i, '');
+
+        // type=2 for announcements (type=1 is news)
+        const apiUrl = `https://np-listapi.eastmoney.com/comm/wap/getListInfo?cb=&client=wap&type=2&mession=&fc=${numericCode}&count=${count}`;
+        const json = await fetchEastMoney(apiUrl);
+
+        const announcementList = json?.data?.list || [];
+        const announcements = announcementList.map((item: any) => ({
+          title: item.title || '',
+          date: item.showtime || '',
+          url: item.url || '',
+        }));
+
+        const result = { code, announcements };
+        setCache(cacheKey, result);
+
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error("Error in announcements route:", err);
+        return new Response(JSON.stringify({ error: errorMessage }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // =========================================================================
+    // GET /api/stocks/fundamentals/:code — 基本面数据 (from East Money)
+    // =========================================================================
+    const fundamentalsMatch = url.pathname.match(/^\/api\/stocks\/fundamentals\/(.+)$/);
+    if (req.method === "GET" && fundamentalsMatch) {
+      try {
+        const code = decodeURIComponent(fundamentalsMatch[1]);
+
+        const cacheKey = `fundamentals:${code}`;
+        const cached = getCached(cacheKey);
+        if (cached) {
+          return new Response(JSON.stringify(cached), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const secid = resolveSecid(code);
+        const apiUrl = `http://push2.eastmoney.com/api/qt/stock/get?fltt=2&invt=2&secid=${secid}&fields=f57,f58,f43,f162,f163,f167,f164,f168,f114,f116,f117,f170,f173,f183,f185,f186,f187`;
+        const json = await fetchEastMoney(apiUrl);
+        const d = json?.data || {};
+
+        const num = (v: any) => (v === '-' || v === undefined || v === null) ? null : Number(v) || 0;
+
+        const result = {
+          code,
+          name: d.f58 || '',
+          price: num(d.f43),
+          changePercent: num(d.f170),
+          pe: num(d.f162),
+          peStatic: num(d.f163),
+          pb: num(d.f167),
+          roe: num(d.f164),
+          turnoverRate: num(d.f168),
+          floatShares: num(d.f114),
+          totalMarketCap: num(d.f116),
+          floatMarketCap: num(d.f117),
+          roa: num(d.f173),
+          eps: num(d.f183),
+          bvps: num(d.f185),
+          ps: num(d.f186),
+          cashFlowPerShare: num(d.f187),
+        };
+        setCache(cacheKey, result);
+
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error("Error in fundamentals route:", err);
+        return new Response(JSON.stringify({ error: errorMessage }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
     if (req.method === "POST" && url.pathname === "/api/chat") {
       try {
         const { messages } = await req.json();
