@@ -60,6 +60,18 @@ function computeSignalsServer(
   }
 }
 
+// Kill any existing process on the target port before starting
+try {
+  const proc = Bun.spawnSync(["lsof", "-ti", `:${PORT}`]);
+  const pids = proc.stdout.toString().trim();
+  if (pids) {
+    for (const pid of pids.split("\n")) {
+      try { process.kill(Number(pid), "SIGKILL"); } catch {}
+    }
+    Bun.sleepSync(500);
+  }
+} catch {}
+
 console.log(`Starting Bun API server on port ${PORT}...`);
 
 Bun.serve({
