@@ -1,7 +1,7 @@
 import { createChatAgent } from "@/core/agent/chatAgent";
+import { type OHLCVItem } from "@/web/lib/indicators";
 import {
   macd, rsi, bollingerBands, kdj, maCross,
-  type OHLCVItem,
 } from "@/web/lib/indicators";
 import {
   runBacktest,
@@ -13,118 +13,17 @@ import {
   BUILT_IN_SCENARIOS,
 } from "@/web/lib/risk";
 import { runPrediction } from "@/web/lib/predict";
+import {
+  normalizeReturns, compareVolatility, calculateCorrelation,
+  rankByReturn, rankBySharpe, compareIndicators, generateComparisonSummary,
+  type StockData,
+} from "@/web/lib/compare";
+import {
+  fetchEastMoney, fetchKline, resolveSecid,
+  getCached, setCache, parseStockItem, parseSectorItem,
+} from "@/core/services/eastmoney";
 
 const PORT = process.env.API_PORT || 3135;
-
-// =========================================================================
-// East Money (东方财富) API proxy — NO local stock data
-// =========================================================================
-const CACHE_TTL_MS = 3_000; // 3s cache for near real-time data
-const apiCache = new Map<string, { data: any; timestamp: number }>();
-
-function getCached(key: string): any | null {
-  const entry = apiCache.get(key);
-  if (entry && Date.now() - entry.timestamp < CACHE_TTL_MS) return entry.data;
-  return null;
-}
-
-function setCache(key: string, data: any): void {
-  apiCache.set(key, { data, timestamp: Date.now() });
-}
-
-/**
- * Fetch from East Money API and parse JSON response.
- * East Money returns JSONP-like or plain JSON depending on endpoint.
- */
-async function fetchEastMoney(url: string): Promise<any> {
-  const res = await fetch(url, {
-    headers: {
-      'Referer': 'https://quote.eastmoney.com',
-      'User-Agent': 'Mozilla/5.0',
-    },
-  });
-  const text = await res.text();
-  // Some endpoints return JSONP: callback(json); strip it
-  const jsonMatch = text.match(/^\w+\(([\s\S]+)\);?\s*$/);
-  if (jsonMatch) return JSON.parse(jsonMatch[1]);
-  return JSON.parse(text);
-}
-
-/**
- * Infer exchange prefix from a bare numeric A-share code.
- * 6xx = Shanghai (sh), 0xx/3xx = Shenzhen (sz), 9xx = Shanghai B, 2xx = Shenzhen B
- */
-function inferExchange(code: string): string {
-  if (code.startsWith('6') || code.startsWith('9')) return 'sh';
-  return 'sz';
-}
-
-/**
- * Resolve a stock code (possibly prefixed with sh/sz, or bare numeric) into
- * an East Money secid like "1.600519" or "0.000001".
- */
-function resolveSecid(code: string): string {
-  if (code.startsWith('sz')) return `0.${code.slice(2)}`;
-  if (code.startsWith('sh')) return `1.${code.slice(2)}`;
-  // Bare numeric code — infer exchange from leading digit
-  const exchange = inferExchange(code);
-  return exchange === 'sh' ? `1.${code}` : `0.${code}`;
-}
-
-/**
- * Parse East Money clist stock item (f2=price, f3=changePct, f4=change,
- * f5=volume, f6=turnover, f12=code, f13=market, f14=name) into our standard format.
- */
-function parseStockItem(item: any): any {
-  const numericCode = String(item.f12 || '');
-  // f13: 0 = Shenzhen, 1 = Shanghai. Fall back to inference if missing.
-  const market = item.f13 === 1 || item.f13 === '1' ? 'sh'
-    : item.f13 === 0 || item.f13 === '0' ? 'sz'
-    : inferExchange(numericCode);
-  return {
-    ticker: `${market}${numericCode}`,
-    name: String(item.f14 || ''),
-    price: item.f2 === '-' ? 0 : Number(item.f2) || 0,
-    changePercent: item.f3 === '-' ? 0 : Number(item.f3) || 0,
-    change: item.f4 === '-' ? 0 : Number(item.f4) || 0,
-    volume: item.f5 === '-' ? 0 : Number(item.f5) || 0,
-    turnover: item.f6 === '-' ? 0 : Number(item.f6) || 0,
-  };
-}
-
-/**
- * Parse East Money sector item (f2=changePercent of sector, f3=changePct,
- * f4=change, f12=code like BK0475, f14=name).
- */
-function parseSectorItem(item: any): any {
-  return {
-    code: String(item.f12 || ''),
-    name: String(item.f14 || ''),
-    changePercent: item.f3 === '-' ? 0 : Number(item.f3) || 0,
-    change: item.f4 === '-' ? 0 : Number(item.f4) || 0,
-    price: item.f2 === '-' ? 0 : Number(item.f2) || 0,
-  };
-}
-
-/**
- * Fetch kline data from East Money and parse into OHLCVItem[].
- */
-async function fetchKlineOHLCV(code: string, days: number, klt: number): Promise<OHLCVItem[]> {
-  const secid = resolveSecid(code);
-  const apiUrl = `http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=${klt}&fqt=1&end=20500101&lmt=${days}`;
-  const json = await fetchEastMoney(apiUrl);
-  return (json?.data?.klines || []).map((line: string) => {
-    const parts = line.split(',');
-    return {
-      date: parts[0],
-      open: parseFloat(parts[1]),
-      close: parseFloat(parts[2]),
-      high: parseFloat(parts[3]),
-      low: parseFloat(parts[4]),
-      volume: parseFloat(parts[5]),
-    };
-  });
-}
 
 /**
  * Compute indicator signals for a given strategy (server-side version for API routes).
@@ -507,7 +406,7 @@ Bun.serve({
 
         const klt = period || 101;
         const lmt = days || 120;
-        const items = await fetchKlineOHLCV(code, lmt, klt);
+        const items = await fetchKline(code, lmt, klt);
         if (items.length === 0) {
           return new Response(JSON.stringify({ error: `No kline data found for ${code}` }), {
             status: 404,
@@ -552,7 +451,7 @@ Bun.serve({
 
         const klt = period || 101;
         const lmt = days || 250;
-        const items = await fetchKlineOHLCV(code, lmt, klt);
+        const items = await fetchKline(code, lmt, klt);
         if (items.length < 2) {
           return new Response(JSON.stringify({ error: `Not enough data for risk analysis on ${code}` }), {
             status: 404,
@@ -608,7 +507,7 @@ Bun.serve({
 
         const klt = period || 101;
         const lmt = days || 120;
-        const items = await fetchKlineOHLCV(code, lmt, klt);
+        const items = await fetchKline(code, lmt, klt);
         if (items.length === 0) {
           return new Response(JSON.stringify({ error: `No kline data found for ${code}` }), {
             status: 404,
@@ -700,7 +599,7 @@ Bun.serve({
 
         const klt = period || 101;
         const lmt = reqDays || 120;
-        const items = await fetchKlineOHLCV(code, lmt, klt);
+        const items = await fetchKline(code, lmt, klt);
         if (items.length < 30) {
           return new Response(JSON.stringify({ error: `Not enough data for prediction on ${code} (need ≥30, got ${items.length})` }), {
             status: 404,
@@ -730,6 +629,81 @@ Bun.serve({
     }
 
     // =========================================================================
+    // POST /api/compare — 多股对比分析 (multi-stock comparison)
+    // =========================================================================
+    if (req.method === "POST" && url.pathname === "/api/compare") {
+      try {
+        const body = await req.json();
+        const { codes, period, days: reqDays } = body as {
+          codes: string[];
+          period?: number;
+          days?: number;
+        };
+
+        if (!codes || !Array.isArray(codes) || codes.length < 2 || codes.length > 10) {
+          return new Response(JSON.stringify({ error: "codes must be an array of 2-10 stock codes" }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const klt = period || 101;
+        const lmt = reqDays || 60;
+
+        const stockDataList: StockData[] = [];
+        for (const code of codes) {
+          const items = await fetchKline(code, lmt, klt);
+          if (items.length === 0) {
+            return new Response(JSON.stringify({ error: `No kline data found for ${code}` }), {
+              status: 404,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+
+          // Fetch stock name via quote API
+          const secid = resolveSecid(code);
+          let stockName = code;
+          try {
+            const quoteUrl = `http://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f58`;
+            const quoteJson = await fetchEastMoney(quoteUrl);
+            if (quoteJson?.data?.f58) stockName = quoteJson.data.f58;
+          } catch { /* use code as fallback name */ }
+
+          stockDataList.push({ code, name: stockName, klineData: items });
+        }
+
+        const normalized = normalizeReturns(stockDataList);
+        const volatility = compareVolatility(stockDataList);
+        const correlation = calculateCorrelation(stockDataList);
+        const returnRanking = rankByReturn(stockDataList);
+        const sharpeRanking = rankBySharpe(stockDataList);
+        const indicators = compareIndicators(stockDataList);
+        const summary = generateComparisonSummary(stockDataList);
+
+        return new Response(JSON.stringify({
+          codes,
+          dataPoints: stockDataList.map(s => ({ code: s.code, name: s.name, count: s.klineData.length })),
+          normalizedReturns: normalized,
+          volatility,
+          correlation,
+          returnRanking,
+          sharpeRanking,
+          indicators,
+          summary,
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error("Error in compare route:", err);
+        return new Response(JSON.stringify({ error: errorMessage }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // =========================================================================
     // GET /api/stocks/news/:code — 个股新闻 (from East Money)
     // =========================================================================
     const newsMatch = url.pathname.match(/^\/api\/stocks\/news\/(.+)$/);
@@ -749,16 +723,35 @@ Bun.serve({
         // Resolve bare code to get numeric part
         const numericCode = code.replace(/^(sh|sz)/i, '');
 
-        const apiUrl = `https://np-listapi.eastmoney.com/comm/wap/getListInfo?cb=&client=wap&type=1&mession=&fc=${numericCode}&count=${count}`;
+        // Use East Money search-api-web for stock news articles
+        const param = JSON.stringify({
+          uid: "",
+          keyword: numericCode,
+          type: ["cmsArticleWebOld"],
+          client: "web",
+          clientType: "web",
+          clientVersion: "curr",
+          param: {
+            cmsArticleWebOld: {
+              searchScope: "default",
+              sort: "default",
+              pageIndex: 1,
+              pageSize: count,
+              preTag: "",
+              postTag: "",
+            },
+          },
+        });
+        const apiUrl = `https://search-api-web.eastmoney.com/search/jsonp?cb=&param=${encodeURIComponent(param)}`;
         const json = await fetchEastMoney(apiUrl);
 
-        const newsList = json?.data?.list || [];
+        const newsList = json?.result?.cmsArticleWebOld || [];
         const news = newsList.map((item: any) => ({
-          title: item.title || '',
-          date: item.showtime || '',
+          title: (item.title || '').replace(/<[^>]*>/g, ''),
+          date: item.date || '',
           source: item.mediaName || '',
           url: item.url || '',
-          summary: item.digest || '',
+          summary: (item.content || '').replace(/<[^>]*>/g, '').slice(0, 200),
         }));
 
         const result = { code, news };
@@ -796,15 +789,15 @@ Bun.serve({
 
         const numericCode = code.replace(/^(sh|sz)/i, '');
 
-        // type=2 for announcements (type=1 is news)
-        const apiUrl = `https://np-listapi.eastmoney.com/comm/wap/getListInfo?cb=&client=wap&type=2&mession=&fc=${numericCode}&count=${count}`;
+        // Use East Money np-anotice-stock API for official announcements
+        const apiUrl = `https://np-anotice-stock.eastmoney.com/api/security/ann?cb=&sr=-1&page_size=${count}&page_index=1&ann_type=SHA,SZA&client_source=web&f_node=0&s_node=0&stock_list=${numericCode}`;
         const json = await fetchEastMoney(apiUrl);
 
         const announcementList = json?.data?.list || [];
         const announcements = announcementList.map((item: any) => ({
           title: item.title || '',
-          date: item.showtime || '',
-          url: item.url || '',
+          date: item.notice_date || item.display_time || '',
+          url: item.art_code ? `https://data.eastmoney.com/notices/detail/${numericCode}/${item.art_code}.html` : '',
         }));
 
         const result = { code, announcements };
