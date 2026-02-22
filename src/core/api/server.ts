@@ -19,7 +19,7 @@ import {
   type StockData,
 } from "@/web/lib/compare";
 import {
-  fetchEastMoney, fetchKline, resolveSecid,
+  fetchEastMoney, fetchKline, fetchKlineWithMeta, resolveSecid,
   getCached, setCache, parseStockItem, parseSectorItem,
 } from "@/core/services/eastmoney";
 
@@ -1071,6 +1071,315 @@ Bun.serve({
             ...corsHeaders,
             'Content-Type': 'application/json'
           },
+        });
+      }
+    }
+
+    // ─── POST /api/portfolio/optimize ─────────────────────────────────
+    if (req.method === "POST" && url.pathname === "/api/portfolio/optimize") {
+      try {
+        const body = await req.json() as { stocks?: string[]; algorithm?: string; days?: number; riskFreeRate?: number };
+        const { stocks, algorithm = 'markowitz', days = 250, riskFreeRate = 0.025 } = body;
+        if (!stocks || stocks.length < 2 || stocks.length > 10) {
+          return new Response(JSON.stringify({ error: "需要2-10只股票" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        const { dailyReturns: dr } = await import("@/web/lib/risk");
+        const dataPromises = stocks.map((s: string) => fetchKlineWithMeta(s, 'daily', days));
+        const results = await Promise.all(dataPromises);
+
+        const assets: { code: string; name: string; returns: number[] }[] = [];
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i];
+          if (typeof r === 'string') return new Response(JSON.stringify({ error: `获取 ${stocks[i]} 失败` }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          const closes = r.items.map((item: any) => item.close);
+          assets.push({ code: r.symbol, name: r.name, returns: dr(closes) });
+        }
+        const minLen = Math.min(...assets.map(a => a.returns.length));
+        for (const a of assets) a.returns = a.returns.slice(a.returns.length - minLen);
+
+        const n = assets.length;
+        const meanReturns = assets.map(a => (a.returns.reduce((s, v) => s + v, 0) / a.returns.length) * 252);
+        const covMatrix: number[][] = Array.from({ length: n }, () => Array(n).fill(0));
+        for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+          const mi = assets[i].returns.reduce((s, v) => s + v, 0) / minLen;
+          const mj = assets[j].returns.reduce((s, v) => s + v, 0) / minLen;
+          let cov = 0;
+          for (let k = 0; k < minLen; k++) cov += (assets[i].returns[k] - mi) * (assets[j].returns[k] - mj);
+          covMatrix[i][j] = (cov / (minLen - 1)) * 252;
+        }
+
+        let weights: number[];
+        if (algorithm === 'risk-parity') {
+          const vols = covMatrix.map((_, i) => Math.sqrt(covMatrix[i][i]));
+          const invVols = vols.map(v => v > 0 ? 1 / v : 0);
+          const s = invVols.reduce((a, b) => a + b, 0);
+          weights = s > 0 ? invVols.map(v => v / s) : Array(n).fill(1 / n);
+        } else {
+          const scores = meanReturns.map((r, i) => { const v = Math.sqrt(covMatrix[i][i]); return v > 0 ? Math.max(0, (r - riskFreeRate) / v) : 0; });
+          const s = scores.reduce((a, b) => a + b, 0);
+          weights = s > 0 ? scores.map(v => v / s) : Array(n).fill(1 / n);
+        }
+
+        let portReturn = 0, portVar = 0;
+        for (let i = 0; i < n; i++) portReturn += weights[i] * meanReturns[i];
+        for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) portVar += weights[i] * weights[j] * covMatrix[i][j];
+        const portVol = Math.sqrt(portVar);
+
+        const frontier: { return: number; volatility: number; sharpe: number }[] = [];
+        const minRet = Math.min(...meanReturns), maxRet = Math.max(...meanReturns);
+        for (let t = 0; t <= 10; t++) {
+          const ratio = t / 10;
+          const w = meanReturns.map(r => Math.max(0, 1 / n + (ratio - 0.5) * (r > (minRet + maxRet) / 2 ? 0.3 : -0.1)));
+          const ws = w.reduce((a, b) => a + b, 0);
+          for (let i = 0; i < n; i++) w[i] /= ws;
+          let r = 0, v = 0;
+          for (let i = 0; i < n; i++) r += w[i] * meanReturns[i];
+          for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) v += w[i] * w[j] * covMatrix[i][j];
+          const vol = Math.sqrt(Math.max(0, v));
+          frontier.push({ return: +r.toFixed(4), volatility: +vol.toFixed(4), sharpe: vol > 0 ? +((r - riskFreeRate) / vol).toFixed(4) : 0 });
+        }
+
+        return new Response(JSON.stringify({
+          weights: assets.map((a, i) => ({ code: a.code, name: a.name, weight: +weights[i].toFixed(4) })),
+          metrics: { expectedReturn: +portReturn.toFixed(4), volatility: +portVol.toFixed(4), sharpeRatio: +(portVol > 0 ? (portReturn - riskFreeRate) / portVol : 0).toFixed(4) },
+          frontier,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (e: unknown) {
+        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : 'Unknown error' }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
+    // ─── POST /api/factor/analyze ─────────────────────────────────────
+    if (req.method === "POST" && url.pathname === "/api/factor/analyze") {
+      try {
+        const body = await req.json() as { stocks?: string[]; factors?: string[]; days?: number };
+        const { stocks, factors = ['momentum', 'volatility', 'rsi', 'macd'], days = 120 } = body;
+        if (!stocks || stocks.length < 2) {
+          return new Response(JSON.stringify({ error: "需要至少2只股票" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        const { macd: macdFn, rsi: rsiFn } = await import("@/web/lib/indicators");
+        const dataPromises = stocks.map((s: string) => fetchKlineWithMeta(s, 'daily', days));
+        const results = await Promise.all(dataPromises);
+
+        const stockList: { code: string; name: string; closes: number[] }[] = [];
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i];
+          if (typeof r === 'string') continue;
+          stockList.push({ code: r.symbol, name: r.name, closes: r.items.map((k: any) => k.close) });
+        }
+
+        const exposures: any[] = [];
+        const scores: Record<string, Record<string, number>> = {};
+        for (const stock of stockList) {
+          scores[stock.code] = {};
+          for (const f of factors) {
+            let val = 0;
+            if (f === 'momentum' && stock.closes.length >= 20) {
+              val = (stock.closes[stock.closes.length - 1] - stock.closes[stock.closes.length - 20]) / stock.closes[stock.closes.length - 20];
+            } else if (f === 'volatility' && stock.closes.length >= 20) {
+              const rets: number[] = [];
+              for (let i = stock.closes.length - 20; i < stock.closes.length; i++) if (i > 0) rets.push((stock.closes[i] - stock.closes[i - 1]) / stock.closes[i - 1]);
+              const m = rets.reduce((s, v) => s + v, 0) / rets.length;
+              val = -Math.sqrt(rets.reduce((s, v) => s + (v - m) ** 2, 0) / rets.length) * Math.sqrt(252);
+            } else if (f === 'rsi') {
+              const rsiVals = rsiFn(stock.closes, 14).filter((v: any): v is number => v !== null);
+              if (rsiVals.length > 0) { const r = rsiVals[rsiVals.length - 1]; val = r < 50 ? (50 - r) / 50 : -(r - 50) / 50; }
+            } else if (f === 'macd') {
+              const hist = macdFn(stock.closes).histogram.filter((v: any): v is number => v !== null);
+              if (hist.length > 0) val = hist[hist.length - 1];
+            }
+            scores[stock.code][f] = +val.toFixed(6);
+            exposures.push({ stockCode: stock.code, factorName: f, exposure: +val.toFixed(6) });
+          }
+        }
+
+        const rankings = stockList.map(stock => {
+          const s = scores[stock.code];
+          const vals = factors.map(f => s[f] || 0);
+          return { code: stock.code, name: stock.name, scores: s, compositeScore: +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(6) };
+        }).sort((a, b) => b.compositeScore - a.compositeScore);
+
+        // Spearman IC: rank correlation between factor exposure and forward returns
+        const icResults = factors.map(f => {
+          if (stockList.length < 3) return { factorName: f, ic: 0, pValue: 1 };
+          const n = stockList.length;
+          // Factor values
+          const fVals = stockList.map(s => scores[s.code][f] || 0);
+          // Forward returns (latest 5-day return as proxy)
+          const fwdRets = stockList.map(s => {
+            const c = s.closes;
+            if (c.length < 6) return 0;
+            return (c[c.length - 1] - c[c.length - 6]) / c[c.length - 6];
+          });
+          // Rank arrays
+          const rank = (arr: number[]) => {
+            const sorted = arr.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v);
+            const ranks = new Array(n);
+            for (let i = 0; i < n; i++) ranks[sorted[i].i] = i + 1;
+            return ranks;
+          };
+          const rankF = rank(fVals);
+          const rankR = rank(fwdRets);
+          // Spearman rho = 1 - 6*sum(d^2) / (n*(n^2-1))
+          let sumD2 = 0;
+          for (let i = 0; i < n; i++) sumD2 += (rankF[i] - rankR[i]) ** 2;
+          const ic = n > 1 ? 1 - (6 * sumD2) / (n * (n * n - 1)) : 0;
+          // t-test for significance
+          const t = n > 2 ? ic * Math.sqrt((n - 2) / (1 - ic * ic + 1e-10)) : 0;
+          // Approximate p-value using normal approximation for |t|
+          const pValue = n > 2 ? Math.max(0.001, Math.exp(-0.5 * t * t) * 0.8) : 1;
+          return { factorName: f, ic: +ic.toFixed(4), pValue: +pValue.toFixed(4) };
+        });
+
+        return new Response(JSON.stringify({ rankings, exposures, icResults }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (e: unknown) {
+        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : 'Unknown error' }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
+    // ─── POST /api/stock/screen ───────────────────────────────────────
+    if (req.method === "POST" && url.pathname === "/api/stock/screen") {
+      try {
+        const body = await req.json() as { conditions?: { field: string; operator: string; value: number }[]; limit?: number };
+        const { conditions = [], limit = 20 } = body;
+        const maxResults = Math.min(limit, 50);
+
+        const screenUrl = `http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=200&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,0+t:80,m:1+t:2,m:1+t:23&fields=f2,f3,f5,f8,f9,f12,f14,f20,f23,f37,f55`;
+        const json = await fetchEastMoney(screenUrl) as { data?: { diff?: any[] } };
+
+        if (!json?.data?.diff) {
+          return new Response(JSON.stringify({ totalMatched: 0, stocks: [] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        let list = json.data.diff.map((d: any) => ({
+          code: d.f12, name: d.f14, price: d.f2, changePercent: d.f3,
+          turnover: d.f8, pe: d.f9, marketCap: d.f20, pb: d.f23, roe: d.f37, eps: d.f55,
+        }));
+
+        for (const c of conditions) {
+          list = list.filter((s: any) => {
+            const v = Number(s[c.field as keyof typeof s]);
+            if (isNaN(v)) return false;
+            switch (c.operator) {
+              case '>': return v > c.value;
+              case '<': return v < c.value;
+              case '>=': return v >= c.value;
+              case '<=': return v <= c.value;
+              default: return true;
+            }
+          });
+        }
+
+        return new Response(JSON.stringify({ totalMatched: list.length, stocks: list.slice(0, maxResults) }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (e: unknown) {
+        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : 'Unknown error' }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
+    // =========================================================================
+    // POST /api/stocks/recommend — 智能选股推荐
+    // =========================================================================
+    if (req.method === "POST" && url.pathname === "/api/stocks/recommend") {
+      try {
+        const body = await req.json() as {
+          style?: 'value' | 'growth' | 'momentum' | 'dividend';
+          sector?: string;
+          riskLevel?: 'low' | 'medium' | 'high';
+          budget?: string;
+          count?: number;
+        };
+        const { style = 'value', riskLevel, budget, count = 10 } = body;
+        const maxCount = Math.min(count, 30);
+
+        const fields = 'f2,f3,f5,f8,f9,f12,f14,f20,f23,f37,f55';
+        const recommendApiUrl = `http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=500&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,0+t:80,m:1+t:2,m:1+t:23&fields=${fields}`;
+        const json = await fetchEastMoney(recommendApiUrl) as { data?: { diff?: any[] } };
+
+        if (!json?.data?.diff) {
+          return new Response(JSON.stringify({ error: "未获取到股票数据" }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const num = (v: any) => {
+          if (v === null || v === undefined || v === '-') return NaN;
+          const n = Number(v);
+          return isNaN(n) ? NaN : n;
+        };
+        const ok = (v: number) => !isNaN(v) && isFinite(v);
+
+        let stocks = json.data.diff.map((d: any) => ({
+          code: d.f12 as string, name: d.f14 as string,
+          price: num(d.f2), changePercent: num(d.f3), turnover: num(d.f8),
+          pe: num(d.f9), marketCap: num(d.f20), pb: num(d.f23), roe: num(d.f37), eps: num(d.f55),
+        })).filter((s: any) => ok(s.price) && s.price > 0);
+
+        if (riskLevel === 'low') stocks = stocks.filter((s: any) => ok(s.marketCap) && s.marketCap > 50_000_000_000);
+        else if (riskLevel === 'medium') stocks = stocks.filter((s: any) => ok(s.marketCap) && s.marketCap > 10_000_000_000);
+
+        if (budget) {
+          const budgetNum = parseFloat(budget);
+          if (ok(budgetNum) && budgetNum > 0) stocks = stocks.filter((s: any) => s.price * 100 <= budgetNum);
+        }
+
+        const styleLabels: Record<string, string> = { value: '价值型', growth: '成长型', momentum: '动量型', dividend: '红利型' };
+        const scored: any[] = [];
+
+        for (const s of stocks) {
+          let pass = true, score = 0, reason = '';
+          switch (style) {
+            case 'value':
+              if (!ok(s.pe) || s.pe <= 0 || s.pe >= 20) pass = false;
+              if (!ok(s.pb) || s.pb <= 0 || s.pb >= 3) pass = false;
+              if (!ok(s.roe) || s.roe <= 10) pass = false;
+              if (pass) { score = (20 - s.pe) / 20 * 30 + (3 - s.pb) / 3 * 30 + (s.roe - 10) / 10 * 40; reason = `PE=${s.pe}, PB=${s.pb}, ROE=${s.roe}%`; }
+              break;
+            case 'growth':
+              if (!ok(s.roe) || s.roe <= 15) pass = false;
+              if (!ok(s.changePercent) || s.changePercent <= 0) pass = false;
+              if (!ok(s.pe) || s.pe <= 0 || s.pe > 60) pass = false;
+              if (pass) { score = (s.roe - 15) / 15 * 40 + s.changePercent / 5 * 30 + (60 - s.pe) / 60 * 30; reason = `ROE=${s.roe}%, 涨幅=${s.changePercent}%, PE=${s.pe}`; }
+              break;
+            case 'momentum':
+              if (!ok(s.changePercent) || s.changePercent <= 1) pass = false;
+              if (!ok(s.turnover) || s.turnover <= 3) pass = false;
+              if (pass) { score = s.changePercent / 10 * 50 + s.turnover / 10 * 50; reason = `涨幅=${s.changePercent}%, 换手率=${s.turnover}%`; }
+              break;
+            case 'dividend':
+              if (!ok(s.pe) || s.pe <= 0 || s.pe >= 25) pass = false;
+              if (!ok(s.roe) || s.roe <= 12) pass = false;
+              if (!ok(s.turnover) || s.turnover > 5) pass = false;
+              if (pass) { score = (25 - s.pe) / 25 * 35 + (s.roe - 12) / 12 * 40 + (5 - s.turnover) / 5 * 25; reason = `PE=${s.pe}, ROE=${s.roe}%, 换手率=${s.turnover}%`; }
+              break;
+          }
+          if (pass && score > 0) scored.push({ ...s, score: +score.toFixed(2), reason });
+        }
+
+        scored.sort((a: any, b: any) => b.score - a.score);
+        const topN = scored.slice(0, maxCount);
+
+        return new Response(JSON.stringify({
+          style: styleLabels[style] || style,
+          riskLevel: riskLevel || '不限',
+          budget: budget || '不限',
+          totalMatched: scored.length,
+          recommendations: topN.map((s: any, i: number) => ({
+            rank: i + 1, code: s.code, name: s.name, price: s.price,
+            changePercent: s.changePercent, pe: s.pe, pb: s.pb, roe: s.roe,
+            turnover: s.turnover, score: s.score, reason: s.reason,
+          })),
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error("Error in recommend route:", err);
+        return new Response(JSON.stringify({ error: errorMessage }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
     }
