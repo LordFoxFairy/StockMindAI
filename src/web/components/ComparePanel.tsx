@@ -365,7 +365,7 @@ export default function ComparePanel({ initialStock }: ComparePanelProps) {
       )}
 
       {/* Chart area */}
-      <div className="flex-1 min-h-0 px-2 pt-2">
+      <div className="flex-1 min-h-[300px] px-2 pt-2 relative">
         {stocks.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
             <Search className="w-8 h-8 text-slate-300 dark:text-slate-600" />
@@ -398,12 +398,14 @@ export default function ComparePanel({ initialStock }: ComparePanelProps) {
             </button>
           </div>
         ) : chartOption ? (
-          <ReactECharts
-            option={chartOption}
-            style={{ height: '100%', width: '100%' }}
-            opts={{ renderer: 'canvas' }}
-            notMerge={true}
-          />
+          <div className="absolute inset-0 px-2 pt-2">
+            <ReactECharts
+              option={chartOption}
+              style={{ height: '100%', width: '100%' }}
+              opts={{ renderer: 'canvas' }}
+              notMerge={true}
+            />
+          </div>
         ) : (
           <div className="flex flex-col items-center justify-center h-full gap-2">
             <span className="text-xs font-mono text-slate-400 dark:text-slate-500">

@@ -5,31 +5,32 @@ import ReactECharts from 'echarts-for-react';
 import { Search, Loader2, X } from 'lucide-react';
 import { useTheme } from '@/web/components/ThemeProvider';
 import type { OHLCVItem } from '@/web/lib/indicators';
-import { macd, rsi, bollingerBands, kdj, maCross } from '@/web/lib/indicators';
+import { pluginRegistry } from '@/web/lib/plugins';
+import type { IndicatorPlugin } from '@/web/lib/plugins';
 import {
   buildMACDChart,
   buildRSIChart,
   buildBollingerChart,
   buildKDJChart,
   buildMACrossChart,
+  buildWRChart,
+  buildOBVChart,
+  buildATRChart,
 } from '@/web/lib/indicatorCharts';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
-
-type StrategyType = 'macd' | 'rsi' | 'bollinger' | 'kdj' | 'maCross';
 
 interface SearchResult {
   code: string;
   name: string;
 }
 
-const STRATEGIES: { key: StrategyType; label: string }[] = [
-  { key: 'macd', label: 'MACD' },
-  { key: 'rsi', label: 'RSI' },
-  { key: 'bollinger', label: '布林带' },
-  { key: 'kdj', label: 'KDJ' },
-  { key: 'maCross', label: '均线交叉' },
-];
+// Dynamically build the indicator list from the plugin registry
+const INDICATOR_PLUGINS = pluginRegistry.getByCategory<IndicatorPlugin>('indicator');
+const STRATEGIES: { key: string; label: string }[] = INDICATOR_PLUGINS.map(p => ({
+  key: p.id,
+  label: p.name,
+}));
 
 const PERIOD_OPTIONS = [
   { klt: 101, label: '日' },
@@ -64,7 +65,7 @@ export default function QuantStrategy({ initialStock }: QuantStrategyProps) {
   const isDark = theme === 'dark';
 
   const [stock, setStock] = useState<{ code: string; name: string } | null>(initialStock ?? null);
-  const [strategy, setStrategy] = useState<StrategyType>('macd');
+  const [strategy, setStrategy] = useState<string>(STRATEGIES[0]?.key ?? 'indicator-macd');
   const [period, setPeriod] = useState(101);
   const [days, setDays] = useState(60);
   const [klineData, setKlineData] = useState<OHLCVItem[]>([]);
@@ -157,47 +158,63 @@ export default function QuantStrategy({ initialStock }: QuantStrategyProps) {
     setSearchOpen(false);
   };
 
-  // Compute chart option
+  // Compute chart option using plugin registry
   const chartOption = useMemo(() => {
     if (klineData.length === 0) return null;
-    const closes = klineData.map(k => k.close);
+    const plugin = pluginRegistry.get(strategy) as IndicatorPlugin | undefined;
+    if (!plugin) return null;
 
+    // Build default params from plugin schema
+    const defaultParams: Record<string, any> = {};
+    for (const p of plugin.params) {
+      defaultParams[p.key] = p.default;
+    }
+
+    const computedData = plugin.compute(klineData, defaultParams);
+
+    // Map plugin id to the appropriate chart builder
     switch (strategy) {
-      case 'macd': {
-        const data = macd(closes);
-        return buildMACDChart(klineData, data, isDark);
-      }
-      case 'rsi': {
-        const data = rsi(closes, 14);
-        return buildRSIChart(klineData, data, isDark);
-      }
-      case 'bollinger': {
-        const data = bollingerBands(closes, 20, 2);
-        return buildBollingerChart(klineData, data, isDark);
-      }
-      case 'kdj': {
-        const data = kdj(klineData, 9, 3, 3);
-        return buildKDJChart(klineData, data, isDark);
-      }
-      case 'maCross': {
-        const data = maCross(klineData, 5, 20);
-        return buildMACrossChart(klineData, data, 5, 20, isDark);
-      }
+      case 'indicator-macd':
+        return buildMACDChart(klineData, computedData, isDark);
+      case 'indicator-rsi':
+        return buildRSIChart(klineData, computedData, isDark);
+      case 'indicator-bollinger':
+        return buildBollingerChart(klineData, computedData, isDark);
+      case 'indicator-kdj':
+        return buildKDJChart(klineData, computedData, isDark);
+      case 'indicator-ma-cross':
+        return buildMACrossChart(klineData, computedData, defaultParams.shortPeriod ?? 5, defaultParams.longPeriod ?? 20, isDark);
+      case 'indicator-wr':
+        return buildWRChart(klineData, computedData, isDark);
+      case 'indicator-obv':
+        return buildOBVChart(klineData, computedData, isDark);
+      case 'indicator-atr':
+        return buildATRChart(klineData, computedData, isDark);
+      default:
+        return null;
     }
   }, [klineData, strategy, isDark]);
 
-  // Generate signal summary text
+  // Generate signal summary text using plugin registry
   const signalSummary = useMemo((): string[] => {
     if (klineData.length === 0) return [];
+    const plugin = pluginRegistry.get(strategy) as IndicatorPlugin | undefined;
+    if (!plugin) return [];
+
+    const defaultParams: Record<string, any> = {};
+    for (const p of plugin.params) {
+      defaultParams[p.key] = p.default;
+    }
+
     const closes = klineData.map(k => k.close);
     const signals: string[] = [];
 
     switch (strategy) {
-      case 'macd': {
-        const data = macd(closes);
-        const lastDif = data.dif.filter((v): v is number => v !== null);
-        const lastDea = data.dea.filter((v): v is number => v !== null);
-        const lastHist = data.histogram.filter((v): v is number => v !== null);
+      case 'indicator-macd': {
+        const data = plugin.compute(klineData, defaultParams);
+        const lastDif = data.dif.filter((v: number | null): v is number => v !== null);
+        const lastDea = data.dea.filter((v: number | null): v is number => v !== null);
+        const lastHist = data.histogram.filter((v: number | null): v is number => v !== null);
         if (lastDif.length > 0 && lastDea.length > 0) {
           const dif = lastDif[lastDif.length - 1];
           const dea = lastDea[lastDea.length - 1];
@@ -213,23 +230,23 @@ export default function QuantStrategy({ initialStock }: QuantStrategyProps) {
         }
         break;
       }
-      case 'rsi': {
-        const data = rsi(closes, 14);
-        const lastRsi = data.filter((v): v is number => v !== null);
+      case 'indicator-rsi': {
+        const data = plugin.compute(klineData, defaultParams);
+        const lastRsi = data.filter((v: number | null): v is number => v !== null);
         if (lastRsi.length > 0) {
           const val = lastRsi[lastRsi.length - 1];
-          signals.push(`当前 RSI(14) = ${val.toFixed(1)}`);
+          signals.push(`当前 RSI(${defaultParams.period}) = ${val.toFixed(1)}`);
           if (val > 70) signals.push('RSI 超过 70，处于超买区域，注意回调风险');
           else if (val < 30) signals.push('RSI 低于 30，处于超卖区域，可能存在反弹机会');
           else signals.push('RSI 在 30-70 之间，处于中性区域');
         }
         break;
       }
-      case 'bollinger': {
-        const data = bollingerBands(closes, 20, 2);
-        const lastUpper = data.upper.filter((v): v is number => v !== null);
-        const lastLower = data.lower.filter((v): v is number => v !== null);
-        const lastMiddle = data.middle.filter((v): v is number => v !== null);
+      case 'indicator-bollinger': {
+        const data = plugin.compute(klineData, defaultParams);
+        const lastUpper = data.upper.filter((v: number | null): v is number => v !== null);
+        const lastLower = data.lower.filter((v: number | null): v is number => v !== null);
+        const lastMiddle = data.middle.filter((v: number | null): v is number => v !== null);
         if (lastUpper.length > 0 && lastLower.length > 0 && lastMiddle.length > 0) {
           const price = closes[closes.length - 1];
           const upper = lastUpper[lastUpper.length - 1];
@@ -245,11 +262,11 @@ export default function QuantStrategy({ initialStock }: QuantStrategyProps) {
         }
         break;
       }
-      case 'kdj': {
-        const data = kdj(klineData, 9, 3, 3);
-        const lastK = data.k.filter((v): v is number => v !== null);
-        const lastD = data.d.filter((v): v is number => v !== null);
-        const lastJ = data.j.filter((v): v is number => v !== null);
+      case 'indicator-kdj': {
+        const data = plugin.compute(klineData, defaultParams);
+        const lastK = data.k.filter((v: number | null): v is number => v !== null);
+        const lastD = data.d.filter((v: number | null): v is number => v !== null);
+        const lastJ = data.j.filter((v: number | null): v is number => v !== null);
         if (lastK.length > 0 && lastD.length > 0 && lastJ.length > 0) {
           const k = lastK[lastK.length - 1];
           const d = lastD[lastD.length - 1];
@@ -262,8 +279,10 @@ export default function QuantStrategy({ initialStock }: QuantStrategyProps) {
         }
         break;
       }
-      case 'maCross': {
-        const data = maCross(klineData, 5, 20);
+      case 'indicator-ma-cross': {
+        const data = plugin.compute(klineData, defaultParams);
+        const shortPeriod = defaultParams.shortPeriod ?? 5;
+        const longPeriod = defaultParams.longPeriod ?? 20;
         const recent = data.signals.slice(-3);
         if (recent.length === 0) {
           signals.push('近期无均线交叉信号');
@@ -271,17 +290,64 @@ export default function QuantStrategy({ initialStock }: QuantStrategyProps) {
           for (const sig of recent) {
             signals.push(
               sig.type === 'golden'
-                ? `${sig.date} 出现金叉（MA5 上穿 MA20），看涨信号`
-                : `${sig.date} 出现死叉（MA5 下穿 MA20），看跌信号`,
+                ? `${sig.date} 出现金叉（MA${shortPeriod} 上穿 MA${longPeriod}），看涨信号`
+                : `${sig.date} 出现死叉（MA${shortPeriod} 下穿 MA${longPeriod}），看跌信号`,
             );
           }
         }
-        const lastShort = data.shortMA.filter((v): v is number => v !== null);
-        const lastLong = data.longMA.filter((v): v is number => v !== null);
+        const lastShort = data.shortMA.filter((v: number | null): v is number => v !== null);
+        const lastLong = data.longMA.filter((v: number | null): v is number => v !== null);
         if (lastShort.length > 0 && lastLong.length > 0) {
           const s = lastShort[lastShort.length - 1];
           const l = lastLong[lastLong.length - 1];
-          signals.push(s > l ? '当前 MA5 在 MA20 上方，多头排列' : '当前 MA5 在 MA20 下方，空头排列');
+          signals.push(s > l ? `当前 MA${shortPeriod} 在 MA${longPeriod} 上方，多头排列` : `当前 MA${shortPeriod} 在 MA${longPeriod} 下方，空头排列`);
+        }
+        break;
+      }
+      case 'indicator-wr': {
+        const data = plugin.compute(klineData, defaultParams);
+        const lastWr = data.wr.filter((v: number | null): v is number => v !== null);
+        if (lastWr.length > 0) {
+          const val = lastWr[lastWr.length - 1];
+          signals.push(`当前 WR(${defaultParams.period}) = ${val.toFixed(1)}`);
+          if (val > -20) signals.push('WR 高于 -20，处于超买区域，注意回调风险');
+          else if (val < -80) signals.push('WR 低于 -80，处于超卖区域，可能存在反弹机会');
+          else signals.push('WR 在 -80 到 -20 之间，处于中性区域');
+        }
+        break;
+      }
+      case 'indicator-obv': {
+        const data = plugin.compute(klineData, defaultParams);
+        if (data.obv.length >= 2) {
+          const cur = data.obv[data.obv.length - 1];
+          const prev = data.obv[data.obv.length - 2];
+          signals.push(`当前 OBV = ${cur.toLocaleString()}`);
+          if (cur > prev) signals.push('OBV 上升，成交量支持价格上涨');
+          else if (cur < prev) signals.push('OBV 下降，成交量支持价格下跌');
+          else signals.push('OBV 持平，量能无明显变化');
+          // Check divergence with price
+          if (data.obv.length >= 5) {
+            const obvTrend = cur - data.obv[data.obv.length - 5];
+            const priceTrend = closes[closes.length - 1] - closes[closes.length - 5];
+            if (obvTrend > 0 && priceTrend < 0) signals.push('OBV 与价格出现底背离，可能存在反弹机会');
+            else if (obvTrend < 0 && priceTrend > 0) signals.push('OBV 与价格出现顶背离，注意回调风险');
+          }
+        }
+        break;
+      }
+      case 'indicator-atr': {
+        const data = plugin.compute(klineData, defaultParams);
+        const lastAtr = data.atr.filter((v: number | null): v is number => v !== null);
+        if (lastAtr.length >= 2) {
+          const cur = lastAtr[lastAtr.length - 1];
+          const prev = lastAtr[lastAtr.length - 2];
+          const price = closes[closes.length - 1];
+          const atrPct = (cur / price * 100);
+          signals.push(`当前 ATR(${defaultParams.period}) = ${cur.toFixed(2)}（占价格 ${atrPct.toFixed(2)}%）`);
+          if (cur > prev) signals.push('ATR 上升，市场波动性增大');
+          else signals.push('ATR 下降，市场波动性减小');
+          if (atrPct > 5) signals.push('波动率较高，建议控制仓位');
+          else if (atrPct < 1) signals.push('波动率较低，可能即将出现方向性突破');
         }
         break;
       }

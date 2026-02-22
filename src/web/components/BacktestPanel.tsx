@@ -5,16 +5,10 @@ import ReactECharts from 'echarts-for-react';
 import { Search, Loader2, X, Play } from 'lucide-react';
 import { useTheme } from '@/web/components/ThemeProvider';
 import type { OHLCVItem } from '@/web/lib/indicators';
-import { macd, rsi, bollingerBands, kdj, maCross } from '@/web/lib/indicators';
-import {
-  runBacktest,
-  macdToSignals,
-  rsiToSignals,
-  bollingerToSignals,
-  kdjToSignals,
-  maCrossToSignals,
-} from '@/web/lib/backtest';
+import { runBacktest } from '@/web/lib/backtest';
 import type { BacktestResult, BacktestConfig } from '@/web/lib/backtest';
+import { pluginRegistry } from '@/web/lib/plugins';
+import type { StrategyPlugin, ParamSchema } from '@/web/lib/plugins';
 import {
   buildEquityCurveChart,
   buildTradeDistributionChart,
@@ -36,20 +30,19 @@ import {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
 
-type StrategyType = 'macd' | 'rsi' | 'bollinger' | 'kdj' | 'maCross';
-
 interface SearchResult {
   code: string;
   name: string;
 }
 
-const STRATEGIES: { key: StrategyType; label: string }[] = [
-  { key: 'macd', label: 'MACD' },
-  { key: 'rsi', label: 'RSI' },
-  { key: 'bollinger', label: '布林带' },
-  { key: 'kdj', label: 'KDJ' },
-  { key: 'maCross', label: '均线交叉' },
-];
+/** Build the default param values from a plugin's param schema */
+function buildDefaultParams(params: ParamSchema[]): Record<string, number | string> {
+  const defaults: Record<string, number | string> = {};
+  for (const p of params) {
+    defaults[p.key] = p.default;
+  }
+  return defaults;
+}
 
 const PERIOD_OPTIONS = [
   { klt: 101, label: '日' },
@@ -63,22 +56,6 @@ const DAY_OPTIONS: { value: number; label: string }[] = [
   { value: 500, label: '500天' },
 ];
 
-interface StrategyParams {
-  macd: { fast: number; slow: number; signal: number };
-  rsi: { period: number; overbought: number; oversold: number };
-  bollinger: { period: number; multiplier: number };
-  kdj: { period: number; kSmooth: number; dSmooth: number };
-  maCross: { shortPeriod: number; longPeriod: number };
-}
-
-const DEFAULT_PARAMS: StrategyParams = {
-  macd: { fast: 12, slow: 26, signal: 9 },
-  rsi: { period: 14, overbought: 70, oversold: 30 },
-  bollinger: { period: 20, multiplier: 2 },
-  kdj: { period: 9, kSmooth: 3, dSmooth: 3 },
-  maCross: { shortPeriod: 5, longPeriod: 20 },
-};
-
 interface BacktestPanelProps {
   initialStock?: { code: string; name: string } | null;
 }
@@ -87,17 +64,41 @@ export default function BacktestPanel({ initialStock }: BacktestPanelProps) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
+  // Get all strategy plugins from the registry
+  const strategyPlugins = useMemo(() => pluginRegistry.getByCategory<StrategyPlugin>('strategy'), []);
+  const defaultStrategyId = strategyPlugins.length > 0 ? strategyPlugins[0].id : '';
+
   const [stock, setStock] = useState<{ code: string; name: string } | null>(initialStock ?? null);
-  const [strategy, setStrategy] = useState<StrategyType>('macd');
+  const [strategyId, setStrategyId] = useState<string>(defaultStrategyId);
   const [period, setPeriod] = useState(101);
   const [days, setDays] = useState(120);
+
+  // Stop-loss / take-profit state
+  const [stopLossEnabled, setStopLossEnabled] = useState(false);
+  const [stopLossPercent, setStopLossPercent] = useState(5);
+  const [takeProfitEnabled, setTakeProfitEnabled] = useState(false);
+  const [takeProfitPercent, setTakeProfitPercent] = useState(10);
+
   const [config, setConfig] = useState<BacktestConfig>({
     initialCapital: 100000,
     commission: 0.0003,
     slippage: 0.001,
     stampDuty: 0.001,
   });
-  const [strategyParams, setStrategyParams] = useState<StrategyParams>(DEFAULT_PARAMS);
+
+  // Dynamic strategy params keyed by plugin id
+  const [pluginParams, setPluginParams] = useState<Record<string, Record<string, number | string>>>(() => {
+    const allPlugins = pluginRegistry.getByCategory<StrategyPlugin>('strategy');
+    const initial: Record<string, Record<string, number | string>> = {};
+    for (const p of allPlugins) {
+      initial[p.id] = buildDefaultParams(p.params);
+    }
+    return initial;
+  });
+
+  // Current selected strategy plugin
+  const activePlugin = useMemo(() => strategyPlugins.find(p => p.id === strategyId), [strategyPlugins, strategyId]);
+  const activeParams = pluginParams[strategyId] ?? {};
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -159,7 +160,7 @@ export default function BacktestPanel({ initialStock }: BacktestPanelProps) {
   };
 
   const runBacktestHandler = useCallback(async () => {
-    if (!stock) return;
+    if (!stock || !activePlugin) return;
     setLoading(true);
     setError(null);
     setResult(null);
@@ -175,59 +176,29 @@ export default function BacktestPanel({ initialStock }: BacktestPanelProps) {
         return;
       }
 
-      const closes = klineData.map(k => k.close);
-      let signals;
+      // Generate signals via the selected strategy plugin
+      const signals = activePlugin.generateSignals(klineData, activeParams);
 
-      switch (strategy) {
-        case 'macd': {
-          const p = strategyParams.macd;
-          const ind = macd(closes, p.fast, p.slow, p.signal);
-          signals = macdToSignals(ind, klineData);
-          break;
-        }
-        case 'rsi': {
-          const p = strategyParams.rsi;
-          const ind = rsi(closes, p.period);
-          signals = rsiToSignals(ind, klineData, p.oversold, p.overbought);
-          break;
-        }
-        case 'bollinger': {
-          const p = strategyParams.bollinger;
-          const ind = bollingerBands(closes, p.period, p.multiplier);
-          signals = bollingerToSignals(ind, klineData);
-          break;
-        }
-        case 'kdj': {
-          const p = strategyParams.kdj;
-          const ind = kdj(klineData, p.period, p.kSmooth, p.dSmooth);
-          signals = kdjToSignals(ind, klineData);
-          break;
-        }
-        case 'maCross': {
-          const p = strategyParams.maCross;
-          const ind = maCross(klineData, p.shortPeriod, p.longPeriod);
-          signals = maCrossToSignals(ind, klineData);
-          break;
-        }
-      }
+      // Build config with optional stop-loss / take-profit
+      const btConfig: BacktestConfig = {
+        ...config,
+        stopLoss: stopLossEnabled ? { type: 'percent', value: stopLossPercent / 100 } : undefined,
+        takeProfit: takeProfitEnabled ? { type: 'percent', value: takeProfitPercent / 100 } : undefined,
+      };
 
-      const btResult = runBacktest(klineData, signals, config);
+      const btResult = runBacktest(klineData, signals, btConfig);
       setResult(btResult);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '回测运行失败');
     } finally {
       setLoading(false);
     }
-  }, [stock, days, period, strategy, strategyParams, config]);
+  }, [stock, days, period, activePlugin, activeParams, config, stopLossEnabled, stopLossPercent, takeProfitEnabled, takeProfitPercent]);
 
-  const updateParam = <K extends StrategyType>(
-    strat: K,
-    key: keyof StrategyParams[K],
-    value: number,
-  ) => {
-    setStrategyParams(prev => ({
+  const updatePluginParam = (pluginId: string, key: string, value: number | string) => {
+    setPluginParams(prev => ({
       ...prev,
-      [strat]: { ...prev[strat], [key]: value },
+      [pluginId]: { ...prev[pluginId], [key]: value },
     }));
   };
 
@@ -312,12 +283,12 @@ export default function BacktestPanel({ initialStock }: BacktestPanelProps) {
 
           {/* Strategy selector */}
           <select
-            value={strategy}
-            onChange={e => setStrategy(e.target.value as StrategyType)}
+            value={strategyId}
+            onChange={e => setStrategyId(e.target.value)}
             className="px-2 py-1.5 text-[10px] font-mono rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none cursor-pointer"
           >
-            {STRATEGIES.map(s => (
-              <option key={s.key} value={s.key}>{s.label}</option>
+            {strategyPlugins.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
 
@@ -387,91 +358,73 @@ export default function BacktestPanel({ initialStock }: BacktestPanelProps) {
           </button>
         ))}
         <div className="w-px h-4 bg-slate-200 dark:bg-white/10" />
-        {/* Strategy params */}
-        {strategy === 'macd' && (
-          <>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              fast:
-              <input type="number" value={strategyParams.macd.fast} onChange={e => updateParam('macd', 'fast', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              slow:
-              <input type="number" value={strategyParams.macd.slow} onChange={e => updateParam('macd', 'slow', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              signal:
-              <input type="number" value={strategyParams.macd.signal} onChange={e => updateParam('macd', 'signal', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-          </>
+        {/* Dynamic strategy params from plugin schema */}
+        {activePlugin && activePlugin.params.map(param => (
+          <label key={param.key} className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+            {param.label}:
+            <input
+              type="number"
+              step={param.step ?? 1}
+              min={param.min}
+              max={param.max}
+              value={activeParams[param.key] ?? param.default}
+              onChange={e => updatePluginParam(strategyId, param.key, Number(e.target.value))}
+              className="w-14 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none"
+            />
+          </label>
+        ))}
+      </div>
+
+      {/* Stop-loss / Take-profit controls */}
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-slate-100 dark:border-white/[0.03] flex-wrap text-[10px] font-mono">
+        {/* Stop Loss */}
+        <label className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={stopLossEnabled}
+            onChange={e => setStopLossEnabled(e.target.checked)}
+            className="rounded border-slate-300 dark:border-slate-600 text-cyan-500 focus:ring-cyan-500 w-3 h-3"
+          />
+          止损
+        </label>
+        {stopLossEnabled && (
+          <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+            <input
+              type="number"
+              step={0.5}
+              min={0.1}
+              max={50}
+              value={stopLossPercent}
+              onChange={e => setStopLossPercent(Number(e.target.value))}
+              className="w-12 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none"
+            />
+            %
+          </label>
         )}
-        {strategy === 'rsi' && (
-          <>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              period:
-              <input type="number" value={strategyParams.rsi.period} onChange={e => updateParam('rsi', 'period', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              超买:
-              <input type="number" value={strategyParams.rsi.overbought} onChange={e => updateParam('rsi', 'overbought', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              超卖:
-              <input type="number" value={strategyParams.rsi.oversold} onChange={e => updateParam('rsi', 'oversold', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-          </>
-        )}
-        {strategy === 'bollinger' && (
-          <>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              period:
-              <input type="number" value={strategyParams.bollinger.period} onChange={e => updateParam('bollinger', 'period', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              倍数:
-              <input type="number" step="0.5" value={strategyParams.bollinger.multiplier} onChange={e => updateParam('bollinger', 'multiplier', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-          </>
-        )}
-        {strategy === 'kdj' && (
-          <>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              period:
-              <input type="number" value={strategyParams.kdj.period} onChange={e => updateParam('kdj', 'period', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              K:
-              <input type="number" value={strategyParams.kdj.kSmooth} onChange={e => updateParam('kdj', 'kSmooth', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              D:
-              <input type="number" value={strategyParams.kdj.dSmooth} onChange={e => updateParam('kdj', 'dSmooth', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-          </>
-        )}
-        {strategy === 'maCross' && (
-          <>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              短期:
-              <input type="number" value={strategyParams.maCross.shortPeriod} onChange={e => updateParam('maCross', 'shortPeriod', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-            <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-              长期:
-              <input type="number" value={strategyParams.maCross.longPeriod} onChange={e => updateParam('maCross', 'longPeriod', Number(e.target.value))}
-                className="w-10 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none" />
-            </label>
-          </>
+        <div className="w-px h-4 bg-slate-200 dark:bg-white/10" />
+        {/* Take Profit */}
+        <label className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={takeProfitEnabled}
+            onChange={e => setTakeProfitEnabled(e.target.checked)}
+            className="rounded border-slate-300 dark:border-slate-600 text-cyan-500 focus:ring-cyan-500 w-3 h-3"
+          />
+          止盈
+        </label>
+        {takeProfitEnabled && (
+          <label className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+            <input
+              type="number"
+              step={0.5}
+              min={0.1}
+              max={100}
+              value={takeProfitPercent}
+              onChange={e => setTakeProfitPercent(Number(e.target.value))}
+              className="w-12 px-1 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 outline-none"
+            />
+            %
+          </label>
         )}
       </div>
 

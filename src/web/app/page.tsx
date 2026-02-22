@@ -10,9 +10,78 @@ import BacktestPanel from '@/web/components/BacktestPanel';
 import StrategyLab from '@/web/components/StrategyLab';
 import PredictionPanel from '@/web/components/PredictionPanel';
 import ComparePanel from '@/web/components/ComparePanel';
-import { Activity, BarChart2, Bell, FlaskConical, GitCompareArrows, LayoutDashboard, Settings, Target, TrendingUp, User, Sun, Moon } from 'lucide-react';
+import PortfolioPanel from '@/web/components/PortfolioPanel';
+import FactorPanel from '@/web/components/FactorPanel';
+import { Activity, BarChart2, Briefcase, GitCompareArrows, LayoutDashboard, Settings, Target, User, Sun, Moon } from 'lucide-react';
 import { generateId } from 'ai';
 import { useTheme } from '@/web/components/ThemeProvider';
+
+// --- Module-based navigation types & config ---
+
+type ModuleId = 'market' | 'quant' | 'predict' | 'compare' | 'portfolio';
+
+interface ModuleConfig {
+  id: ModuleId;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  tabs: { id: string; label: string }[];
+  defaultTab: string;
+}
+
+const MODULES: ModuleConfig[] = [
+  {
+    id: 'market',
+    icon: LayoutDashboard,
+    label: '行情中心',
+    tabs: [
+      { id: 'chart', label: '图表' },
+      { id: 'detail', label: '数据' },
+      { id: 'watchlist', label: '行情' },
+    ],
+    defaultTab: 'chart',
+  },
+  {
+    id: 'quant',
+    icon: BarChart2,
+    label: '量化分析',
+    tabs: [
+      { id: 'quant', label: '量化' },
+      { id: 'backtest', label: '回测' },
+      { id: 'lab', label: '实验室' },
+    ],
+    defaultTab: 'quant',
+  },
+  {
+    id: 'predict',
+    icon: Target,
+    label: 'AI预测',
+    tabs: [
+      { id: 'predict', label: '预测' },
+    ],
+    defaultTab: 'predict',
+  },
+  {
+    id: 'compare',
+    icon: GitCompareArrows,
+    label: '多股对比',
+    tabs: [
+      { id: 'compare', label: '对比' },
+    ],
+    defaultTab: 'compare',
+  },
+  {
+    id: 'portfolio',
+    icon: Briefcase,
+    label: '组合优化',
+    tabs: [
+      { id: 'portfolio', label: '组合优化' },
+      { id: 'factor', label: '因子分析' },
+    ],
+    defaultTab: 'portfolio',
+  },
+];
+
+// --- Message types ---
 
 interface Message {
   id: string;
@@ -29,11 +98,14 @@ interface SerializedMessage {
   timestamp: string;
 }
 
+// --- Storage ---
+
 const STORAGE_KEYS = {
   messages: 'stockmind-messages',
   chartData: 'stockmind-chart-data',
   selectedStock: 'stockmind-selected-stock',
   activeTab: 'stockmind-active-tab',
+  activeModule: 'stockmind-active-module',
 };
 
 const DEFAULT_MESSAGES: Message[] = [
@@ -71,8 +143,12 @@ function saveToStorage(key: string, value: unknown): void {
   }
 }
 
+// --- Valid module IDs ---
+const ALL_MODULE_IDS: ModuleId[] = MODULES.map(m => m.id);
+
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'chart' | 'data' | 'watchlist' | 'quant' | 'backtest' | 'lab' | 'predict' | 'compare'>('chart');
+  const [activeModule, setActiveModule] = useState<ModuleId>('market');
+  const [activeTab, setActiveTab] = useState<string>('chart');
   const [chartData, setChartData] = useState<Record<string, unknown> | null>(null);
   const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
   const [isLoading, setIsLoading] = useState(false);
@@ -80,11 +156,37 @@ export default function Home() {
   const [hydrated, setHydrated] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
+  // Current module config (derived)
+  const currentModule = MODULES.find(m => m.id === activeModule) || MODULES[0];
+
+  // Switch module handler: also sets default tab
+  const handleModuleChange = useCallback((moduleId: ModuleId) => {
+    const mod = MODULES.find(m => m.id === moduleId);
+    if (!mod) return;
+    setActiveModule(moduleId);
+    setActiveTab(mod.defaultTab);
+  }, []);
+
+  // Switch tab handler (within current module)
+  const handleTabChange = useCallback((tabId: string) => {
+    setActiveTab(tabId);
+  }, []);
+
   // Restore state from localStorage after hydration
   useEffect(() => {
+    const savedModule = loadFromStorage<string>(STORAGE_KEYS.activeModule, 'market');
     const savedTab = loadFromStorage<string>(STORAGE_KEYS.activeTab, 'chart');
-    if (savedTab === 'chart' || savedTab === 'data' || savedTab === 'watchlist' || savedTab === 'quant' || savedTab === 'backtest' || savedTab === 'lab' || savedTab === 'predict' || savedTab === 'compare') {
+
+    // Validate saved module
+    const validModule = ALL_MODULE_IDS.includes(savedModule as ModuleId) ? (savedModule as ModuleId) : 'market';
+    setActiveModule(validModule);
+
+    // Validate saved tab belongs to the saved module
+    const mod = MODULES.find(m => m.id === validModule);
+    if (mod && mod.tabs.some(t => t.id === savedTab)) {
       setActiveTab(savedTab);
+    } else if (mod) {
+      setActiveTab(mod.defaultTab);
     }
 
     setChartData(loadFromStorage(STORAGE_KEYS.chartData, null));
@@ -99,6 +201,11 @@ export default function Home() {
   }, []);
 
   // Persist state changes to localStorage
+  useEffect(() => {
+    if (!hydrated) return;
+    saveToStorage(STORAGE_KEYS.activeModule, activeModule);
+  }, [activeModule, hydrated]);
+
   useEffect(() => {
     if (!hydrated) return;
     saveToStorage(STORAGE_KEYS.activeTab, activeTab);
@@ -116,7 +223,6 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
-    // Only persist serializable fields (exclude display ReactNode)
     const serializable: SerializedMessage[] = messages.map(({ id, role, content, timestamp }) => ({
       id, role, content, timestamp: timestamp.toISOString(),
     }));
@@ -125,26 +231,18 @@ export default function Home() {
 
   // Remove leaked tool result JSON from assistant text
   const cleanToolOutputFromText = (text: string): string => {
-    // Remove JSON blocks that look like tool output (contain known tool result keys)
-    // This handles multi-line JSON objects by matching balanced braces
     let cleaned = text;
     const toolOutputPatterns = [
-      // Match JSON objects containing stock data keys
       /```json\s*\{[\s\S]*?\}\s*```/g,
     ];
     for (const pattern of toolOutputPatterns) {
       cleaned = cleaned.replace(pattern, '');
     }
-
-    // Also remove standalone JSON objects that contain tool-result-like keys
-    // We search for lines starting with { and containing known keys
     cleaned = cleaned.replace(/^\{[\s\S]*?"(?:symbol|ticker|klines|kline_data|stock_data|market_cap|pe_ratio|current_price)"[\s\S]*?\}$/gm, '');
-
     return cleaned.trim();
   };
 
   const handleSendMessage = async (msg: string) => {
-    // Optimistically add user message
     const userMessageId = generateId();
     const assistantMessageId = generateId();
 
@@ -174,7 +272,7 @@ export default function Home() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          messages: [{ role: 'user', content: msg }], // The exact format will depend on what deepagents expects
+          messages: [{ role: 'user', content: msg }],
         }),
       });
 
@@ -220,6 +318,7 @@ export default function Home() {
                       const config = typeof raw === 'string' ? JSON.parse(raw) : raw;
                       if (config && Object.keys(config).length > 0) {
                         setChartData(config);
+                        setActiveModule('market');
                         setActiveTab('chart');
 
                         if (!fullAssistantMessage.includes('[图表已生成]')) {
@@ -243,7 +342,8 @@ export default function Home() {
                       if (args?.symbol) {
                         const symbol = args.symbol as string;
                         setSelectedStock({ code: symbol, name: symbol });
-                        setActiveTab('data');
+                        setActiveModule('market');
+                        setActiveTab('detail');
                       }
                     } catch {
                       // ignore
@@ -262,7 +362,6 @@ export default function Home() {
                 ));
               }
             } catch (e) {
-              // Ignore parse errors on incomplete chunks or specific non-json lines
               console.error("Parse error on chunk:", e, line);
             }
           }
@@ -275,7 +374,6 @@ export default function Home() {
 
         if (value) {
           sseBuffer += decoder.decode(value, { stream: true });
-          // Split on double newline (SSE event boundary), keep any incomplete tail in the buffer
           const parts = sseBuffer.split('\n\n');
           sseBuffer = parts.pop() || '';
           const lines = parts.map(p => p.trim()).filter(Boolean);
@@ -312,106 +410,151 @@ export default function Home() {
     }
   };
 
+  // --- Render the content area based on activeTab ---
+  const renderContent = () => {
+    switch (activeTab) {
+      case 'chart':
+        return (
+          <div className="w-full h-full bg-white/80 dark:bg-[#0a0e17]/50 backdrop-blur-xl border border-slate-200 dark:border-white/5 rounded-xl overflow-hidden relative flex flex-col items-center justify-center shadow-lg dark:shadow-2xl dark:shadow-black/50">
+            {chartData ? (
+              <StockChart data={chartData} className="w-full h-full p-4" />
+            ) : (
+              <>
+                <div className="relative group">
+                  <div className="absolute -inset-1 bg-blue-100 dark:bg-cyan-900/30 rounded-2xl blur-md opacity-50 group-hover:opacity-100 transition duration-1000"></div>
+                  <div className="relative w-20 h-20 mb-6 rounded-2xl bg-white dark:bg-[#0a0e17] border border-slate-200 dark:border-white/10 flex items-center justify-center">
+                    <Activity className="w-8 h-8 text-blue-500 dark:text-cyan-400 opacity-80" />
+                  </div>
+                </div>
+                <h3 className="text-xl font-mono mb-3 text-slate-700 dark:text-slate-300 tracking-tight uppercase">系统就绪</h3>
+                <p className="text-slate-400 dark:text-slate-500 text-center max-w-md text-xs font-mono">
+                  &gt; 输入股票代码或自然语言查询以初始化可视化
+                </p>
+              </>
+            )}
+          </div>
+        );
+
+      case 'detail':
+        if (selectedStock) {
+          return (
+            <StockDetail
+              code={selectedStock.code}
+              name={selectedStock.name}
+              onClose={() => {
+                setSelectedStock(null);
+                setActiveTab('chart');
+              }}
+              onAnalyze={(code) => {
+                handleSendMessage(`分析 ${selectedStock.name}(${code}) 的股票表现，包括技术面和基本面`);
+              }}
+            />
+          );
+        }
+        // No stock selected, show placeholder
+        return (
+          <div className="w-full h-full bg-white/80 dark:bg-[#0a0e17]/50 backdrop-blur-xl border border-slate-200 dark:border-white/5 rounded-xl overflow-hidden relative flex flex-col items-center justify-center shadow-lg dark:shadow-2xl dark:shadow-black/50">
+            <div className="relative group">
+              <div className="absolute -inset-1 bg-blue-100 dark:bg-cyan-900/30 rounded-2xl blur-md opacity-50 group-hover:opacity-100 transition duration-1000"></div>
+              <div className="relative w-20 h-20 mb-6 rounded-2xl bg-white dark:bg-[#0a0e17] border border-slate-200 dark:border-white/10 flex items-center justify-center">
+                <Activity className="w-8 h-8 text-blue-500 dark:text-cyan-400 opacity-80" />
+              </div>
+            </div>
+            <h3 className="text-xl font-mono mb-3 text-slate-700 dark:text-slate-300 tracking-tight uppercase">未选择股票</h3>
+            <p className="text-slate-400 dark:text-slate-500 text-center max-w-md text-xs font-mono">
+              &gt; 请先从行情列表中选择一只股票，或通过AI对话查询
+            </p>
+          </div>
+        );
+
+      case 'watchlist':
+        return (
+          <StockWatchlist
+            onSelectStock={(ticker, name) => {
+              setSelectedStock({ code: ticker, name });
+              setActiveTab('detail');
+            }}
+          />
+        );
+
+      case 'quant':
+        return <QuantStrategy initialStock={selectedStock} />;
+
+      case 'backtest':
+        return <BacktestPanel initialStock={selectedStock} />;
+
+      case 'lab':
+        return <StrategyLab initialStock={selectedStock} />;
+
+      case 'predict':
+        return <PredictionPanel initialStock={selectedStock} />;
+
+      case 'compare':
+        return <ComparePanel initialStock={selectedStock} />;
+
+      case 'portfolio':
+        return <PortfolioPanel initialStock={selectedStock} />;
+
+      case 'factor':
+        return <FactorPanel initialStock={selectedStock} />;
+
+      default:
+        return null;
+    }
+  };
+
   return (
     <main className="flex h-screen overflow-hidden bg-slate-50 dark:bg-[#0a0e17] font-sans selection:bg-cyan-200 dark:selection:bg-cyan-900 selection:text-cyan-900 dark:selection:text-cyan-50">
 
-      {/* Left Sidebar - Navigation */}
+      {/* Left Sidebar - Module Navigation */}
       <aside className="w-16 md:w-20 shrink-0 border-r border-slate-200 dark:border-white/5 bg-white dark:bg-[#0a0e17]/90 backdrop-blur-xl flex flex-col items-center py-6 z-20">
+        {/* Logo */}
         <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-cyan-900/50 border border-blue-200 dark:border-cyan-800/50 flex items-center justify-center shadow-sm dark:shadow-[0_0_15px_rgba(6,182,212,0.15)] mb-8">
           <Activity className="w-6 h-6 text-blue-600 dark:text-cyan-400" />
         </div>
 
+        {/* Module Icons */}
         <nav className="flex-1 flex flex-col gap-4 w-full items-center">
-          <button
-            onClick={() => setActiveTab('chart')}
-            className={`p-3 rounded-xl relative group transition-all ${
-              activeTab === 'chart' || activeTab === 'data' || activeTab === 'watchlist'
-                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
-                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
-            }`}
-          >
-            <LayoutDashboard className="w-5 h-5" />
-            {(activeTab === 'chart' || activeTab === 'data' || activeTab === 'watchlist') && (
-              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('quant')}
-            className={`p-3 rounded-xl relative group transition-all ${
-              activeTab === 'quant'
-                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
-                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
-            }`}
-          >
-            <BarChart2 className="w-5 h-5" />
-            {activeTab === 'quant' && (
-              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('backtest')}
-            className={`p-3 rounded-xl relative group transition-all ${
-              activeTab === 'backtest'
-                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
-                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
-            }`}
-          >
-            <TrendingUp className="w-5 h-5" />
-            {activeTab === 'backtest' && (
-              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('lab')}
-            className={`p-3 rounded-xl relative group transition-all ${
-              activeTab === 'lab'
-                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
-                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
-            }`}
-          >
-            <FlaskConical className="w-5 h-5" />
-            {activeTab === 'lab' && (
-              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('predict')}
-            className={`p-3 rounded-xl relative group transition-all ${
-              activeTab === 'predict'
-                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
-                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
-            }`}
-          >
-            <Target className="w-5 h-5" />
-            {activeTab === 'predict' && (
-              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('compare')}
-            className={`p-3 rounded-xl relative group transition-all ${
-              activeTab === 'compare'
-                ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
-                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
-            }`}
-          >
-            <GitCompareArrows className="w-5 h-5" />
-            {activeTab === 'compare' && (
-              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
-            )}
-          </button>
-
-          <button className="p-3 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 rounded-xl transition-all">
-            <Bell className="w-5 h-5" />
-          </button>
+          {MODULES.map((mod) => {
+            const Icon = mod.icon;
+            const isActive = activeModule === mod.id;
+            return (
+              <button
+                key={mod.id}
+                onClick={() => handleModuleChange(mod.id)}
+                title={mod.label}
+                className={`p-3 rounded-xl relative group transition-all ${
+                  isActive
+                    ? 'text-blue-600 dark:text-cyan-400 bg-blue-50 dark:bg-cyan-950/30'
+                    : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50'
+                }`}
+              >
+                <Icon className="w-5 h-5" />
+                {isActive && (
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 dark:bg-cyan-400 rounded-r-md"></span>
+                )}
+                {/* Tooltip */}
+                <span className="absolute left-full ml-2 px-2 py-1 text-[10px] font-mono whitespace-nowrap bg-slate-800 dark:bg-slate-700 text-white rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50">
+                  {mod.label}
+                </span>
+              </button>
+            );
+          })}
         </nav>
 
+        {/* Bottom: theme toggle, settings, user */}
         <div className="flex flex-col gap-4 w-full items-center mt-auto">
+          <button
+            onClick={toggleTheme}
+            className="p-3 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 rounded-xl transition-all"
+            aria-label="Toggle theme"
+          >
+            {theme === 'light' ? (
+              <Moon className="w-5 h-5" />
+            ) : (
+              <Sun className="w-5 h-5" />
+            )}
+          </button>
           <button className="p-3 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 rounded-xl transition-all">
             <Settings className="w-5 h-5" />
           </button>
@@ -421,12 +564,12 @@ export default function Home() {
         </div>
       </aside>
 
-      {/* Main Content Area - Chart & Visualization */}
+      {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden relative">
         {/* Ambient background glow */}
         <div className="absolute top-0 right-1/4 w-[500px] h-[500px] bg-blue-100/50 dark:bg-cyan-900/10 rounded-full blur-[120px] pointer-events-none"></div>
 
-        {/* Top Header Placeholder */}
+        {/* Top Header with Module Label + Tab Bar */}
         <header className="flex justify-between items-center h-16 px-6 border-b border-slate-200 dark:border-white/5 bg-white/80 dark:bg-[#0a0e17]/80 backdrop-blur-xl z-10 shrink-0">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2">
@@ -438,55 +581,28 @@ export default function Home() {
 
             <div className="h-6 w-px bg-slate-200 dark:bg-white/10"></div>
 
+            {/* Current module label */}
+            <span className="text-sm font-mono text-slate-500 dark:text-slate-400 tracking-wide">
+              {currentModule.label}
+            </span>
+
+            <div className="h-6 w-px bg-slate-200 dark:bg-white/10"></div>
+
+            {/* Tab bar for current module */}
             <div className="flex bg-slate-100 dark:bg-[#0a0e17] p-1 rounded-lg border border-slate-200 dark:border-white/5">
-              <button
-                onClick={() => setActiveTab('chart')}
-                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'chart' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              >
-                图表
-              </button>
-              <button
-                onClick={() => setActiveTab('data')}
-                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'data' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              >
-                数据
-              </button>
-              <button
-                onClick={() => setActiveTab('watchlist')}
-                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'watchlist' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              >
-                行情
-              </button>
-              <button
-                onClick={() => setActiveTab('quant')}
-                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'quant' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              >
-                量化
-              </button>
-              <button
-                onClick={() => setActiveTab('backtest')}
-                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'backtest' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              >
-                回测
-              </button>
-              <button
-                onClick={() => setActiveTab('lab')}
-                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'lab' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              >
-                实验室
-              </button>
-              <button
-                onClick={() => setActiveTab('predict')}
-                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'predict' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              >
-                预测
-              </button>
-              <button
-                onClick={() => setActiveTab('compare')}
-                className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${activeTab === 'compare' ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'}`}
-              >
-                对比
-              </button>
+              {currentModule.tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => handleTabChange(tab.id)}
+                  className={`px-4 py-1.5 text-xs font-mono rounded-md transition-colors ${
+                    activeTab === tab.id
+                      ? 'bg-white dark:bg-slate-800/80 text-blue-600 dark:text-cyan-400 shadow-sm'
+                      : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -499,7 +615,7 @@ export default function Home() {
               市场开盘
             </div>
 
-            {/* Theme Toggle Button */}
+            {/* Theme Toggle Button (header) */}
             <button
               onClick={toggleTheme}
               className="p-2 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/50 hover:bg-slate-200 dark:hover:bg-slate-700/50 transition-colors"
@@ -516,55 +632,7 @@ export default function Home() {
 
         {/* Content Area */}
         <div className="flex-1 p-4 overflow-hidden relative z-10 font-mono">
-          {activeTab === 'lab' ? (
-            <StrategyLab initialStock={selectedStock} />
-          ) : activeTab === 'backtest' ? (
-            <BacktestPanel initialStock={selectedStock} />
-          ) : activeTab === 'predict' ? (
-            <PredictionPanel initialStock={selectedStock} />
-          ) : activeTab === 'compare' ? (
-            <ComparePanel initialStock={selectedStock} />
-          ) : activeTab === 'quant' ? (
-            <QuantStrategy initialStock={selectedStock} />
-          ) : activeTab === 'data' && selectedStock ? (
-            <StockDetail
-              code={selectedStock.code}
-              name={selectedStock.name}
-              onClose={() => {
-                setSelectedStock(null);
-                setActiveTab('chart');
-              }}
-              onAnalyze={(code) => {
-                handleSendMessage(`分析 ${selectedStock.name}(${code}) 的股票表现，包括技术面和基本面`);
-              }}
-            />
-          ) : activeTab === 'watchlist' ? (
-            <StockWatchlist
-              onSelectStock={(ticker, name) => {
-                setSelectedStock({ code: ticker, name });
-                setActiveTab('data');
-              }}
-            />
-          ) : (
-            <div className="w-full h-full bg-white/80 dark:bg-[#0a0e17]/50 backdrop-blur-xl border border-slate-200 dark:border-white/5 rounded-xl overflow-hidden relative flex flex-col items-center justify-center shadow-lg dark:shadow-2xl dark:shadow-black/50">
-              {chartData ? (
-                <StockChart data={chartData} className="w-full h-full p-4" />
-              ) : (
-                <>
-                  <div className="relative group">
-                    <div className="absolute -inset-1 bg-blue-100 dark:bg-cyan-900/30 rounded-2xl blur-md opacity-50 group-hover:opacity-100 transition duration-1000"></div>
-                    <div className="relative w-20 h-20 mb-6 rounded-2xl bg-white dark:bg-[#0a0e17] border border-slate-200 dark:border-white/10 flex items-center justify-center">
-                      <Activity className="w-8 h-8 text-blue-500 dark:text-cyan-400 opacity-80" />
-                    </div>
-                  </div>
-                  <h3 className="text-xl font-mono mb-3 text-slate-700 dark:text-slate-300 tracking-tight uppercase">系统就绪</h3>
-                  <p className="text-slate-400 dark:text-slate-500 text-center max-w-md text-xs font-mono">
-                    &gt; 输入股票代码或自然语言查询以初始化可视化
-                  </p>
-                </>
-              )}
-            </div>
-          )}
+          {renderContent()}
         </div>
       </div>
 

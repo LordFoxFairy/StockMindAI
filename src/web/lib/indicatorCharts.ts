@@ -1,4 +1,7 @@
 import type { OHLCVItem, MACDResult, BollingerResult, KDJResult, MACrossResult } from './indicators';
+import type { WRResult } from './plugins/indicator/wr';
+import type { OBVResult } from './plugins/indicator/obv';
+import type { ATRResult } from './plugins/indicator/atr';
 
 interface ThemeColors {
   textColor: string;
@@ -464,5 +467,172 @@ export function buildMACrossChart(
       { ...buildVolumeSeries(items, isDark, 1, 1) },
     ],
     dataZoom: [{ type: 'inside' as const, xAxisIndex: [0, 1], start: 0, end: 100 }],
+  };
+}
+
+// ---- Williams %R Chart ----
+export function buildWRChart(
+  items: OHLCVItem[],
+  wrData: WRResult,
+  isDark: boolean,
+) {
+  const dates = items.map(k => k.date);
+  const c = getThemeColors(isDark);
+  const base = buildBaseOption(dates, isDark);
+
+  return {
+    ...base,
+    grid: [
+      { left: '8%', right: '3%', top: '6%', height: '45%' },
+      { left: '8%', right: '3%', top: '56%', height: '22%' },
+      { left: '8%', right: '3%', top: '82%', height: '12%' },
+    ],
+    xAxis: [
+      { ...makeXAxis(dates, c, false), gridIndex: 0 },
+      { ...makeXAxis(dates, c, false), gridIndex: 1 },
+      { ...makeXAxis(dates, c, true), gridIndex: 2 },
+    ],
+    yAxis: [
+      makeYAxis(c, { gridIndex: 0 }),
+      {
+        ...makeYAxis(c, { gridIndex: 1, show: true, splitNumber: 3 }),
+        min: -100,
+        max: 0,
+      },
+      makeYAxis(c, { gridIndex: 2, show: false, splitNumber: 2 }),
+    ],
+    series: [
+      { ...buildCandleSeries(items, isDark), xAxisIndex: 0, yAxisIndex: 0 },
+      {
+        name: 'WR',
+        type: 'line',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: wrData.wr,
+        lineStyle: { width: 1.5, color: '#a78bfa' },
+        symbol: 'none',
+      },
+      {
+        name: '超买线',
+        type: 'line',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: dates.map(() => -20),
+        lineStyle: { width: 1, color: c.upColor, type: 'dashed' as const },
+        symbol: 'none',
+        silent: true,
+      },
+      {
+        name: '超卖线',
+        type: 'line',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: dates.map(() => -80),
+        lineStyle: { width: 1, color: c.downColor, type: 'dashed' as const },
+        symbol: 'none',
+        silent: true,
+      },
+      { ...buildVolumeSeries(items, isDark, 2, 2) },
+    ],
+    dataZoom: [{ type: 'inside' as const, xAxisIndex: [0, 1, 2], start: 0, end: 100 }],
+  };
+}
+
+// ---- OBV Chart ----
+export function buildOBVChart(
+  items: OHLCVItem[],
+  obvData: OBVResult,
+  isDark: boolean,
+) {
+  const dates = items.map(k => k.date);
+  const c = getThemeColors(isDark);
+  const base = buildBaseOption(dates, isDark);
+
+  return {
+    ...base,
+    grid: [
+      { left: '8%', right: '3%', top: '6%', height: '45%' },
+      { left: '8%', right: '3%', top: '56%', height: '22%' },
+      { left: '8%', right: '3%', top: '82%', height: '12%' },
+    ],
+    xAxis: [
+      { ...makeXAxis(dates, c, false), gridIndex: 0 },
+      { ...makeXAxis(dates, c, false), gridIndex: 1 },
+      { ...makeXAxis(dates, c, true), gridIndex: 2 },
+    ],
+    yAxis: [
+      makeYAxis(c, { gridIndex: 0 }),
+      makeYAxis(c, { gridIndex: 1, show: true, splitNumber: 3 }),
+      makeYAxis(c, { gridIndex: 2, show: false, splitNumber: 2 }),
+    ],
+    series: [
+      { ...buildCandleSeries(items, isDark), xAxisIndex: 0, yAxisIndex: 0 },
+      {
+        name: 'OBV',
+        type: 'line',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: obvData.obv,
+        lineStyle: { width: 1.5, color: '#38bdf8' },
+        areaStyle: { color: 'rgba(56, 189, 248, 0.1)' },
+        symbol: 'none',
+      },
+      { ...buildVolumeSeries(items, isDark, 2, 2) },
+    ],
+    dataZoom: [{ type: 'inside' as const, xAxisIndex: [0, 1, 2], start: 0, end: 100 }],
+  };
+}
+
+// ---- ATR Chart ----
+export function buildATRChart(
+  items: OHLCVItem[],
+  atrData: ATRResult,
+  isDark: boolean,
+) {
+  const dates = items.map(k => k.date);
+  const c = getThemeColors(isDark);
+  const base = buildBaseOption(dates, isDark);
+
+  return {
+    ...base,
+    grid: [
+      { left: '8%', right: '3%', top: '6%', height: '45%' },
+      { left: '8%', right: '3%', top: '56%', height: '22%' },
+      { left: '8%', right: '3%', top: '82%', height: '12%' },
+    ],
+    xAxis: [
+      { ...makeXAxis(dates, c, false), gridIndex: 0 },
+      { ...makeXAxis(dates, c, false), gridIndex: 1 },
+      { ...makeXAxis(dates, c, true), gridIndex: 2 },
+    ],
+    yAxis: [
+      makeYAxis(c, { gridIndex: 0 }),
+      makeYAxis(c, { gridIndex: 1, show: true, splitNumber: 3 }),
+      makeYAxis(c, { gridIndex: 2, show: false, splitNumber: 2 }),
+    ],
+    series: [
+      { ...buildCandleSeries(items, isDark), xAxisIndex: 0, yAxisIndex: 0 },
+      {
+        name: 'ATR',
+        type: 'line',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: atrData.atr,
+        lineStyle: { width: 1.5, color: '#fb923c' },
+        areaStyle: { color: 'rgba(251, 146, 60, 0.1)' },
+        symbol: 'none',
+      },
+      {
+        name: 'TR',
+        type: 'line',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: atrData.tr,
+        lineStyle: { width: 1, color: '#94a3b8', type: 'dotted' as const },
+        symbol: 'none',
+      },
+      { ...buildVolumeSeries(items, isDark, 2, 2) },
+    ],
+    dataZoom: [{ type: 'inside' as const, xAxisIndex: [0, 1, 2], start: 0, end: 100 }],
   };
 }
