@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import ReactECharts from 'echarts-for-react';
-import { Search, Loader2, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { Search, Loader2, TrendingUp, TrendingDown, Minus, AlertTriangle, Sparkles, ChevronDown, ChevronUp, Target, Zap, ShieldAlert } from 'lucide-react';
 import { useTheme } from '@/web/components/ThemeProvider';
 import type { OHLCVItem } from '@/web/lib/indicators';
 import { runPrediction } from '@/web/lib/predict';
@@ -12,13 +12,12 @@ import {
   buildRadarChart,
   buildPredictionChart,
 } from '@/web/lib/predictCharts';
+import { fetchDeepPrediction } from '@/web/lib/llmPredict';
+import type { LLMPrediction } from '@/web/lib/llmPredict';
+
+import type { SearchResult } from '@/web/types/stock';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
-
-interface SearchResult {
-  code: string;
-  name: string;
-}
 
 const PERIOD_OPTIONS = [
   { klt: 101, label: '日' },
@@ -42,12 +41,13 @@ const DAY_OPTIONS_MAP: Record<number, { value: number; label: string }[]> = {
   ],
 };
 
-type ViewType = 'overview' | 'signals' | 'kline';
+type ViewType = 'overview' | 'signals' | 'kline' | 'llm';
 
 const VIEW_TABS: { key: ViewType; label: string }[] = [
   { key: 'overview', label: '综合评分' },
   { key: 'signals', label: '指标信号' },
   { key: 'kline', label: 'K线分析' },
+  { key: 'llm', label: 'AI深度预测' },
 ];
 
 interface PredictionPanelProps {
@@ -67,6 +67,12 @@ export default function PredictionPanel({ initialStock }: PredictionPanelProps) 
   const [activeView, setActiveView] = useState<ViewType>('overview');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // LLM prediction state
+  const [llmPrediction, setLlmPrediction] = useState<LLMPrediction | null>(null);
+  const [llmLoading, setLlmLoading] = useState(false);
+  const [llmError, setLlmError] = useState<string | null>(null);
+  const [llmExpanded, setLlmExpanded] = useState(false);
 
   // Search state
   const [query, setQuery] = useState('');
@@ -162,6 +168,34 @@ export default function PredictionPanel({ initialStock }: PredictionPanelProps) 
     }
   };
 
+  // Fetch LLM deep prediction
+  const fetchLLM = useCallback(async () => {
+    if (!selectedStock) return;
+    setLlmLoading(true);
+    setLlmError(null);
+    try {
+      const result = await fetchDeepPrediction(selectedStock.code, selectedStock.name);
+      setLlmPrediction(result);
+    } catch (err) {
+      setLlmError(err instanceof Error ? err.message : '获取AI预测失败');
+    } finally {
+      setLlmLoading(false);
+    }
+  }, [selectedStock]);
+
+  // Auto-fetch LLM prediction when switching to LLM tab with a stock selected
+  useEffect(() => {
+    if (activeView === 'llm' && selectedStock && !llmPrediction && !llmLoading) {
+      fetchLLM();
+    }
+  }, [activeView, selectedStock, llmPrediction, llmLoading, fetchLLM]);
+
+  // Reset LLM prediction when stock changes
+  useEffect(() => {
+    setLlmPrediction(null);
+    setLlmError(null);
+  }, [selectedStock]);
+
   // Compute prediction
   const prediction: PredictionResult | null = useMemo(() => {
     if (klineData.length < 30) return null;
@@ -179,6 +213,8 @@ export default function PredictionPanel({ initialStock }: PredictionPanelProps) 
         return buildRadarChart(prediction.signals, isDark);
       case 'kline':
         return buildPredictionChart(klineData, prediction.supportResistance, prediction.trend, isDark);
+      case 'llm':
+        return null;
     }
   }, [prediction, activeView, isDark, klineData]);
 
@@ -287,7 +323,7 @@ export default function PredictionPanel({ initialStock }: PredictionPanelProps) 
       </div>
 
       {/* View tabs */}
-      {prediction && (
+      {selectedStock && (
         <div className="flex items-center gap-1 px-4 py-2 border-b border-slate-100 dark:border-white/[0.03]">
           {VIEW_TABS.map((tab) => (
             <button
@@ -299,6 +335,7 @@ export default function PredictionPanel({ initialStock }: PredictionPanelProps) 
                   : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/40 border border-transparent'
               }`}
             >
+              {tab.key === 'llm' && <Sparkles className="w-3 h-3 inline mr-1" />}
               {tab.label}
             </button>
           ))}
@@ -306,7 +343,7 @@ export default function PredictionPanel({ initialStock }: PredictionPanelProps) 
       )}
 
       {/* Chart area */}
-      <div className="flex-1 min-h-0 px-2 pt-2">
+      <div className="flex-1 min-h-0 px-2 pt-2 overflow-y-auto">
         {!selectedStock ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
             <Search className="w-8 h-8 text-slate-300 dark:text-slate-600" />
@@ -314,6 +351,249 @@ export default function PredictionPanel({ initialStock }: PredictionPanelProps) 
               请搜索并选择一只股票开始预测分析
             </span>
           </div>
+        ) : activeView === 'llm' ? (
+          /* LLM Deep Prediction View */
+          llmLoading ? (
+            <div className="space-y-4 p-4 animate-pulse">
+              <div className="flex items-center gap-3">
+                <div className="w-16 h-16 rounded-full bg-slate-200 dark:bg-slate-700/50" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 bg-slate-200 dark:bg-slate-700/50 rounded w-1/3" />
+                  <div className="h-3 bg-slate-200 dark:bg-slate-700/50 rounded w-1/2" />
+                </div>
+              </div>
+              <div className="h-3 bg-slate-200 dark:bg-slate-700/50 rounded w-full" />
+              <div className="h-3 bg-slate-200 dark:bg-slate-700/50 rounded w-5/6" />
+              <div className="grid grid-cols-3 gap-3 mt-4">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="h-20 bg-slate-200 dark:bg-slate-700/50 rounded-lg" />
+                ))}
+              </div>
+              <div className="space-y-2 mt-4">
+                {[1, 2, 3, 4].map(i => (
+                  <div key={i} className="h-3 bg-slate-200 dark:bg-slate-700/50 rounded w-full" />
+                ))}
+              </div>
+            </div>
+          ) : llmError ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3">
+              <AlertTriangle className="w-8 h-8 text-red-400 dark:text-red-500/70" />
+              <span className="text-xs font-mono text-red-500">{llmError}</span>
+              <button
+                onClick={fetchLLM}
+                className="px-3 py-1.5 text-[11px] font-mono rounded-lg bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/30 hover:bg-red-100 dark:hover:bg-red-950/50 transition-colors"
+              >
+                重试
+              </button>
+            </div>
+          ) : llmPrediction ? (
+            <div className="p-4 space-y-4">
+              {/* Trend + Confidence header */}
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  {llmPrediction.trend === 'bullish' ? (
+                    <div className="w-12 h-12 rounded-full bg-emerald-100 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/40 flex items-center justify-center">
+                      <TrendingUp className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+                    </div>
+                  ) : llmPrediction.trend === 'bearish' ? (
+                    <div className="w-12 h-12 rounded-full bg-red-100 dark:bg-red-950/40 border border-red-200 dark:border-red-800/40 flex items-center justify-center">
+                      <TrendingDown className="w-6 h-6 text-red-600 dark:text-red-400" />
+                    </div>
+                  ) : (
+                    <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/40 flex items-center justify-center">
+                      <Minus className="w-6 h-6 text-amber-600 dark:text-amber-400" />
+                    </div>
+                  )}
+                  <div>
+                    <div className={`text-lg font-mono font-bold ${
+                      llmPrediction.trend === 'bullish' ? 'text-emerald-600 dark:text-emerald-400'
+                        : llmPrediction.trend === 'bearish' ? 'text-red-600 dark:text-red-400'
+                        : 'text-amber-600 dark:text-amber-400'
+                    }`}>
+                      {llmPrediction.trend === 'bullish' ? '看多' : llmPrediction.trend === 'bearish' ? '看空' : '中性'}
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500">
+                      AI深度预测
+                    </div>
+                  </div>
+                </div>
+
+                {/* Confidence meter */}
+                <div className="flex-1 max-w-[200px]">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">置信度</span>
+                    <span className={`text-xs font-mono font-bold ${
+                      llmPrediction.confidence >= 70 ? 'text-emerald-500'
+                        : llmPrediction.confidence >= 40 ? 'text-amber-500'
+                        : 'text-red-500'
+                    }`}>{llmPrediction.confidence}%</span>
+                  </div>
+                  <div className="h-2 bg-slate-200 dark:bg-slate-700/50 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${
+                        llmPrediction.confidence >= 70 ? 'bg-emerald-500'
+                          : llmPrediction.confidence >= 40 ? 'bg-amber-500'
+                          : 'bg-red-500'
+                      }`}
+                      style={{ width: `${llmPrediction.confidence}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Refresh button */}
+                <button
+                  onClick={fetchLLM}
+                  disabled={llmLoading}
+                  className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/50 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                  title="重新预测"
+                >
+                  <Sparkles className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Price targets */}
+              {(llmPrediction.priceTarget.low > 0 || llmPrediction.priceTarget.mid > 0 || llmPrediction.priceTarget.high > 0) && (
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="p-3 rounded-lg bg-red-50/80 dark:bg-red-950/20 border border-red-100 dark:border-red-900/20">
+                    <div className="text-[10px] font-mono text-red-500 dark:text-red-400 mb-1">低位目标</div>
+                    <div className="text-sm font-mono font-bold text-red-600 dark:text-red-400">{llmPrediction.priceTarget.low.toFixed(2)}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-blue-50/80 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/20">
+                    <div className="text-[10px] font-mono text-blue-500 dark:text-blue-400 mb-1">中位目标</div>
+                    <div className="text-sm font-mono font-bold text-blue-600 dark:text-blue-400">{llmPrediction.priceTarget.mid.toFixed(2)}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-emerald-50/80 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/20">
+                    <div className="text-[10px] font-mono text-emerald-500 dark:text-emerald-400 mb-1">高位目标</div>
+                    <div className="text-sm font-mono font-bold text-emerald-600 dark:text-emerald-400">{llmPrediction.priceTarget.high.toFixed(2)}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Timeframes */}
+              {llmPrediction.timeframes.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                    多周期展望
+                  </div>
+                  {llmPrediction.timeframes.map((tf, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-start gap-3 p-2.5 rounded-lg bg-slate-50/80 dark:bg-slate-800/30 border border-slate-100 dark:border-white/[0.03]"
+                    >
+                      <span className={`mt-0.5 text-sm ${
+                        tf.outlook === 'bullish' ? 'text-emerald-500'
+                          : tf.outlook === 'bearish' ? 'text-red-500'
+                          : 'text-amber-500'
+                      }`}>
+                        {tf.outlook === 'bullish' ? '▲' : tf.outlook === 'bearish' ? '▼' : '─'}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-mono font-semibold text-slate-700 dark:text-slate-200">
+                          {tf.period}
+                        </div>
+                        <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 break-all">
+                          {tf.reasoning}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Key factors */}
+              {llmPrediction.keyFactors.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1">
+                    <Target className="w-3 h-3" /> 关键因子
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {llmPrediction.keyFactors.map((factor, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-blue-50 dark:bg-cyan-950/30 text-blue-600 dark:text-cyan-400 border border-blue-100 dark:border-cyan-900/30"
+                      >
+                        {factor}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Risks */}
+              {llmPrediction.risks.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1">
+                    <ShieldAlert className="w-3 h-3" /> 风险提示
+                  </div>
+                  <div className="space-y-1">
+                    {llmPrediction.risks.map((risk, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-start gap-2 text-[11px] font-mono py-1 px-2 rounded-lg bg-red-50/60 dark:bg-red-950/15 border border-red-100 dark:border-red-900/15"
+                      >
+                        <AlertTriangle className="w-3 h-3 text-red-400 dark:text-red-500 shrink-0 mt-0.5" />
+                        <span className="text-slate-600 dark:text-slate-300 break-all">{risk}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Catalysts */}
+              {llmPrediction.catalysts.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1">
+                    <Zap className="w-3 h-3" /> 催化剂
+                  </div>
+                  <div className="space-y-1">
+                    {llmPrediction.catalysts.map((catalyst, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-start gap-2 text-[11px] font-mono py-1 px-2 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/15 border border-emerald-100 dark:border-emerald-900/15"
+                      >
+                        <Zap className="w-3 h-3 text-emerald-500 shrink-0 mt-0.5" />
+                        <span className="text-slate-600 dark:text-slate-300 break-all">{catalyst}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Summary / Reasoning (expandable) */}
+              {llmPrediction.summary && (
+                <div>
+                  <button
+                    onClick={() => setLlmExpanded(!llmExpanded)}
+                    className="flex items-center gap-1 text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                  >
+                    {llmExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    详细分析
+                  </button>
+                  {llmExpanded && (
+                    <div className="mt-2 p-3 rounded-lg bg-slate-50/80 dark:bg-slate-800/30 border border-slate-100 dark:border-white/[0.03]">
+                      <p className="text-[11px] font-mono text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-wrap break-all">
+                        {llmPrediction.summary}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full gap-3">
+              <Sparkles className="w-8 h-8 text-slate-300 dark:text-slate-600" />
+              <span className="text-xs font-mono text-slate-400 dark:text-slate-500">
+                点击下方按钮生成AI深度预测
+              </span>
+              <button
+                onClick={fetchLLM}
+                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 dark:from-cyan-600 dark:to-blue-600 text-white shadow-md hover:shadow-lg transition-all"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                生成AI预测
+              </button>
+            </div>
+          )
         ) : loading ? (
           <div className="flex flex-col items-center justify-center h-full gap-2">
             <Loader2 className="w-6 h-6 text-cyan-500 animate-spin" />
