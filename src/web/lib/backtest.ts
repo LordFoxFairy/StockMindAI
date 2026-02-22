@@ -24,7 +24,8 @@ export interface Trade {
   pnl: number;
   pnlPercent: number;
   holdDays: number;
-  side: 'long';
+  side: 'long' | 'short';
+  exitReason?: string;
 }
 
 export interface BacktestMetrics {
@@ -56,11 +57,31 @@ export interface BacktestResult {
   signals: TradeSignal[];
 }
 
+export interface StopLossConfig {
+  type: 'percent' | 'atr' | 'trailing';
+  value: number;
+}
+
+export interface TakeProfitConfig {
+  type: 'percent';
+  value: number;
+}
+
+export interface PositionSizingConfig {
+  type: 'full' | 'fixed_fraction' | 'kelly' | 'atr';
+  riskPercent?: number;
+  kellyFraction?: number;
+}
+
 export interface BacktestConfig {
   initialCapital?: number;
   commission?: number;
   slippage?: number;
   stampDuty?: number;
+  stopLoss?: StopLossConfig;
+  takeProfit?: TakeProfitConfig;
+  maxHoldDays?: number;
+  positionSizing?: PositionSizingConfig;
 }
 
 // ─── Core backtest engine ─────────────────────────────────────────────────────
@@ -74,6 +95,9 @@ export function runBacktest(
   const commission = config?.commission ?? 0.0003;
   const slippage = config?.slippage ?? 0.001;
   const stampDuty = config?.stampDuty ?? 0.001;
+  const stopLoss = config?.stopLoss;
+  const takeProfit = config?.takeProfit;
+  const maxHoldDays = config?.maxHoldDays;
 
   // Build a signal lookup by date for O(1) access
   const signalMap = new Map<string, TradeSignal>();
@@ -91,25 +115,219 @@ export function runBacktest(
   // Track open position
   let entryDate = '';
   let entryPrice = 0;
+  let entryIdx = -1;
+  let trailingStopPrice = 0; // for trailing stop
 
   // Benchmark: buy-and-hold from first day
   const firstClose = klineData[0]?.close ?? 1;
 
   // For max drawdown duration tracking
   let peak = initialCapital;
-  let peakDate = klineData[0]?.date ?? '';
   let maxDD = 0;
   let maxDDDuration = 0;
-  let currentDDStart = '';
+  let ddStartIdx = -1; // cached index for O(1) drawdown duration
+
+  // Helper: compute ATR at bar index (14-period)
+  function computeATR(idx: number, period = 14): number {
+    if (idx < 1) return 0;
+    let sum = 0;
+    let count = 0;
+    for (let j = Math.max(1, idx - period + 1); j <= idx; j++) {
+      const h = klineData[j].high;
+      const l = klineData[j].low;
+      const cp = klineData[j - 1].close;
+      const tr = Math.max(h - l, Math.abs(h - cp), Math.abs(l - cp));
+      sum += tr;
+      count++;
+    }
+    return count > 0 ? sum / count : 0;
+  }
+
+  // Helper: calculate shares based on position sizing
+  function calcShares(price: number, barIdx: number): number {
+    const sizing = config?.positionSizing;
+    if (!sizing || sizing.type === 'full') {
+      return Math.floor(cash / (price * (1 + commission)));
+    }
+
+    const riskPct = sizing.riskPercent ?? 0.02;
+
+    if (sizing.type === 'fixed_fraction') {
+      // Risk riskPct of capital. If stopLoss defined, use it to size
+      if (stopLoss && stopLoss.type === 'percent') {
+        const riskPerShare = price * stopLoss.value;
+        const maxRisk = cash * riskPct;
+        return Math.floor(maxRisk / (riskPerShare + price * commission));
+      }
+      // Fallback: allocate riskPct of capital
+      const allocation = cash * riskPct * 10; // rough sizing
+      return Math.floor(allocation / (price * (1 + commission)));
+    }
+
+    if (sizing.type === 'kelly') {
+      // Half-Kelly: f* = (bp - q) / b, use half
+      const frac = sizing.kellyFraction ?? 0.5;
+      if (trades.length < 5) {
+        // Not enough data for Kelly, use 10% of capital
+        return Math.floor((cash * 0.1) / (price * (1 + commission)));
+      }
+      const wins = trades.filter(t => t.pnl > 0);
+      const losses = trades.filter(t => t.pnl <= 0);
+      const p = wins.length / trades.length;
+      const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + Math.abs(t.pnlPercent), 0) / wins.length : 0;
+      const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + Math.abs(t.pnlPercent), 0) / losses.length : 0.01;
+      const b = avgLoss > 0 ? avgWin / avgLoss : 1;
+      const q = 1 - p;
+      let kelly = (b * p - q) / b;
+      kelly = Math.max(0, Math.min(kelly * frac, 0.25)); // cap at 25%
+      return Math.floor((cash * kelly) / (price * (1 + commission)));
+    }
+
+    if (sizing.type === 'atr') {
+      const atr = computeATR(barIdx);
+      if (atr <= 0) return Math.floor((cash * 0.1) / (price * (1 + commission)));
+      const maxRisk = cash * riskPct;
+      const atrMultiplier = 2;
+      return Math.floor(maxRisk / (atrMultiplier * atr + price * commission));
+    }
+
+    return Math.floor(cash / (price * (1 + commission)));
+  }
+
+  // Helper: close position
+  function closePosition(i: number, exitPrice: number, exitReason: string) {
+    const proceeds = shares * exitPrice;
+    const commissionCost = proceeds * commission;
+    const stampCost = proceeds * stampDuty;
+    cash += proceeds - commissionCost - stampCost;
+
+    const entryCost = shares * entryPrice * (1 + commission);
+    const exitProceeds = proceeds - commissionCost - stampCost;
+    const tradePnl = exitProceeds - entryCost;
+    const tradePnlPercent = entryCost > 0 ? tradePnl / entryCost : 0;
+
+    const holdDays = entryIdx >= 0 ? i - entryIdx : 0;
+
+    trades.push({
+      entryDate,
+      entryPrice,
+      exitDate: klineData[i].date,
+      exitPrice,
+      pnl: +tradePnl.toFixed(2),
+      pnlPercent: +tradePnlPercent.toFixed(6),
+      holdDays,
+      side: 'long',
+      exitReason,
+    });
+
+    shares = 0;
+    entryDate = '';
+    entryPrice = 0;
+    entryIdx = -1;
+    trailingStopPrice = 0;
+  }
 
   for (let i = 0; i < klineData.length; i++) {
     const bar = klineData[i];
+
+    // ── Check stop-loss / take-profit / max hold BEFORE strategy signals ──
+    if (shares > 0) {
+      const currentPrice = bar.close;
+      const unrealizedPct = (currentPrice - entryPrice) / entryPrice;
+
+      // Stop-loss check
+      if (stopLoss) {
+        let stopTriggered = false;
+        let stopPrice = 0;
+
+        if (stopLoss.type === 'percent') {
+          stopPrice = entryPrice * (1 - stopLoss.value);
+          if (bar.low <= stopPrice) {
+            stopTriggered = true;
+            stopPrice = Math.max(bar.low, stopPrice) * (1 - slippage);
+          }
+        } else if (stopLoss.type === 'atr') {
+          const atr = computeATR(i);
+          stopPrice = entryPrice - stopLoss.value * atr;
+          if (bar.low <= stopPrice) {
+            stopTriggered = true;
+            stopPrice = Math.max(bar.low, stopPrice) * (1 - slippage);
+          }
+        } else if (stopLoss.type === 'trailing') {
+          // Trailing stop: tracks the highest price since entry
+          const highSinceEntry = bar.high;
+          if (highSinceEntry > trailingStopPrice / (1 - stopLoss.value) || trailingStopPrice === 0) {
+            trailingStopPrice = highSinceEntry * (1 - stopLoss.value);
+          }
+          if (bar.low <= trailingStopPrice) {
+            stopTriggered = true;
+            stopPrice = Math.max(bar.low, trailingStopPrice) * (1 - slippage);
+          }
+        }
+
+        if (stopTriggered) {
+          closePosition(i, stopPrice, `止损 (${stopLoss.type})`);
+          // Update equity and continue
+          const equity = cash + shares * bar.close;
+          const benchmarkEquity = initialCapital * (bar.close / firstClose);
+          if (equity > peak) { peak = equity; ddStartIdx = -1; }
+          const dd = peak > 0 ? (equity - peak) / peak : 0;
+          if (dd < 0 && ddStartIdx === -1) ddStartIdx = i;
+          if (dd < maxDD) maxDD = dd;
+          if (ddStartIdx >= 0 && (i - ddStartIdx) > maxDDDuration) maxDDDuration = i - ddStartIdx;
+          equityCurve.push({ date: bar.date, equity: +equity.toFixed(2), drawdown: +dd.toFixed(6), benchmark: +benchmarkEquity.toFixed(2) });
+          continue;
+        }
+      }
+
+      // Take-profit check
+      if (takeProfit && takeProfit.type === 'percent') {
+        const tpPrice = entryPrice * (1 + takeProfit.value);
+        if (bar.high >= tpPrice) {
+          const execPrice = Math.min(bar.high, tpPrice) * (1 - slippage);
+          closePosition(i, execPrice, '止盈');
+          const equity = cash + shares * bar.close;
+          const benchmarkEquity = initialCapital * (bar.close / firstClose);
+          if (equity > peak) { peak = equity; ddStartIdx = -1; }
+          const dd = peak > 0 ? (equity - peak) / peak : 0;
+          if (dd < 0 && ddStartIdx === -1) ddStartIdx = i;
+          if (dd < maxDD) maxDD = dd;
+          if (ddStartIdx >= 0 && (i - ddStartIdx) > maxDDDuration) maxDDDuration = i - ddStartIdx;
+          equityCurve.push({ date: bar.date, equity: +equity.toFixed(2), drawdown: +dd.toFixed(6), benchmark: +benchmarkEquity.toFixed(2) });
+          continue;
+        }
+      }
+
+      // Max hold days check
+      if (maxHoldDays && entryIdx >= 0 && (i - entryIdx) >= maxHoldDays) {
+        const execPrice = bar.close * (1 - slippage);
+        closePosition(i, execPrice, `最大持有天数 (${maxHoldDays}天)`);
+        const equity = cash + shares * bar.close;
+        const benchmarkEquity = initialCapital * (bar.close / firstClose);
+        if (equity > peak) { peak = equity; ddStartIdx = -1; }
+        const dd = peak > 0 ? (equity - peak) / peak : 0;
+        if (dd < 0 && ddStartIdx === -1) ddStartIdx = i;
+        if (dd < maxDD) maxDD = dd;
+        if (ddStartIdx >= 0 && (i - ddStartIdx) > maxDDDuration) maxDDDuration = i - ddStartIdx;
+        equityCurve.push({ date: bar.date, equity: +equity.toFixed(2), drawdown: +dd.toFixed(6), benchmark: +benchmarkEquity.toFixed(2) });
+        continue;
+      }
+
+      // Update trailing stop with today's high
+      if (stopLoss?.type === 'trailing') {
+        const newTrailing = bar.high * (1 - stopLoss.value);
+        if (newTrailing > trailingStopPrice) {
+          trailingStopPrice = newTrailing;
+        }
+      }
+    }
+
+    // ── Process strategy signals ──
     const signal = signalMap.get(bar.date);
 
     if (signal && signal.action === 'buy' && shares === 0) {
-      // Buy with all available cash
       const execPrice = signal.price * (1 + slippage);
-      const maxShares = Math.floor(cash / (execPrice * (1 + commission)));
+      const maxShares = calcShares(execPrice, i);
       if (maxShares > 0) {
         const cost = maxShares * execPrice;
         const commissionCost = cost * commission;
@@ -117,65 +335,32 @@ export function runBacktest(
         shares = maxShares;
         entryDate = bar.date;
         entryPrice = execPrice;
+        entryIdx = i;
+        trailingStopPrice = stopLoss?.type === 'trailing' ? bar.close * (1 - stopLoss.value) : 0;
       }
     } else if (signal && signal.action === 'sell' && shares > 0) {
-      // Sell all shares
       const execPrice = signal.price * (1 - slippage);
-      const proceeds = shares * execPrice;
-      const commissionCost = proceeds * commission;
-      const stampCost = proceeds * stampDuty;
-      cash += proceeds - commissionCost - stampCost;
-
-      // Record trade
-      const pnl = (execPrice - entryPrice) * shares - (entryPrice * shares * commission) - commissionCost - stampCost;
-      // Simpler: just use cash difference approach via entry cost
-      const entryCost = shares * entryPrice * (1 + commission);
-      const exitProceeds = proceeds - commissionCost - stampCost;
-      const tradePnl = exitProceeds - entryCost;
-      const tradePnlPercent = tradePnl / entryCost;
-
-      // Calculate hold days
-      const entryIdx = klineData.findIndex(k => k.date === entryDate);
-      const holdDays = i - (entryIdx >= 0 ? entryIdx : 0);
-
-      trades.push({
-        entryDate,
-        entryPrice,
-        exitDate: bar.date,
-        exitPrice: execPrice,
-        pnl: +tradePnl.toFixed(2),
-        pnlPercent: +tradePnlPercent.toFixed(6),
-        holdDays,
-        side: 'long',
-      });
-
-      shares = 0;
-      entryDate = '';
-      entryPrice = 0;
+      closePosition(i, execPrice, '策略信号');
     }
 
-    // Daily equity
+    // ── Daily equity ──
     const equity = cash + shares * bar.close;
     const benchmarkEquity = initialCapital * (bar.close / firstClose);
 
-    // Drawdown
+    // Drawdown (O(1) — cached ddStartIdx)
     if (equity > peak) {
       peak = equity;
-      peakDate = bar.date;
-      currentDDStart = '';
+      ddStartIdx = -1;
     }
     const dd = peak > 0 ? (equity - peak) / peak : 0;
-    if (dd < 0 && currentDDStart === '') {
-      currentDDStart = bar.date;
+    if (dd < 0 && ddStartIdx === -1) {
+      ddStartIdx = i;
     }
     if (dd < maxDD) {
       maxDD = dd;
     }
-
-    // Track drawdown duration in trading days
-    if (currentDDStart !== '') {
-      const ddStartIdx = klineData.findIndex(k => k.date === currentDDStart);
-      const duration = ddStartIdx >= 0 ? i - ddStartIdx : 0;
+    if (ddStartIdx >= 0) {
+      const duration = i - ddStartIdx;
       if (duration > maxDDDuration) {
         maxDDDuration = duration;
       }

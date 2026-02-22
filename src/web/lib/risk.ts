@@ -118,19 +118,55 @@ function percentile(arr: number[], p: number): number {
   return sorted[lower] + (sorted[upper] - sorted[lower]) * (idx - lower);
 }
 
+// ── t-distribution random number ──────────────────────────────────────────
+
+function randomChiSquared(nu: number): number {
+  // Sum of nu standard normal squared
+  let sum = 0;
+  for (let i = 0; i < Math.floor(nu); i++) {
+    const z = randomNormal();
+    sum += z * z;
+  }
+  return sum;
+}
+
+function randomT(nu: number): number {
+  // T = Z / sqrt(Chi2_nu / nu)
+  const z = randomNormal();
+  const chi2 = randomChiSquared(nu);
+  return z / Math.sqrt(chi2 / nu);
+}
+
 // ── Monte Carlo simulation ─────────────────────────────────────────────────
+
+export type MCModel = 'gbm' | 'jump-diffusion' | 't-distribution';
 
 export function monteCarloSimulation(
   returns: number[],
   days: number,
   simulations: number,
   initialPrice: number,
+  model: MCModel = 'gbm',
 ): MonteCarloResult {
   const mu = mean(returns);
   const sigma = stdDev(returns);
   const dt = 1;
   const drift = (mu - (sigma * sigma) / 2) * dt;
   const diffusion = sigma * Math.sqrt(dt);
+
+  // Jump-diffusion params (Merton): calibrate from excess kurtosis
+  const m = mean(returns);
+  let m4 = 0;
+  for (let i = 0; i < returns.length; i++) m4 += (returns[i] - m) ** 4;
+  const excessKurt = returns.length > 0 && sigma > 0
+    ? (m4 / returns.length) / (sigma ** 4) - 3
+    : 0;
+  const jumpLambda = Math.max(0.01, Math.min(excessKurt / 10, 0.5)); // ~Poisson intensity
+  const jumpMu = -0.02;  // avg jump size (negative for A-share crashes)
+  const jumpSigma = 0.04; // jump volatility
+
+  // t-distribution degrees of freedom (A-share typically nu=4-6)
+  const tNu = Math.max(3, Math.min(8 - excessKurt, 30));
 
   const paths: number[][] = [];
   const finalPrices: number[] = [];
@@ -139,8 +175,27 @@ export function monteCarloSimulation(
     const path: number[] = [initialPrice];
     let price = initialPrice;
     for (let d = 1; d <= days; d++) {
-      const z = randomNormal();
-      price = price * Math.exp(drift + diffusion * z);
+      let shock: number;
+
+      if (model === 't-distribution') {
+        shock = randomT(tNu) * sigma * Math.sqrt((tNu - 2) / tNu);
+        price = price * Math.exp(drift + shock);
+      } else if (model === 'jump-diffusion') {
+        // GBM diffusion + Poisson jump
+        const z = randomNormal();
+        const diffPart = drift + diffusion * z;
+        // Poisson: number of jumps (simplified: Bernoulli per day)
+        const jumpOccurs = Math.random() < jumpLambda;
+        const jumpPart = jumpOccurs
+          ? jumpMu + jumpSigma * randomNormal()
+          : 0;
+        price = price * Math.exp(diffPart + jumpPart);
+      } else {
+        // Standard GBM
+        const z = randomNormal();
+        price = price * Math.exp(drift + diffusion * z);
+      }
+
       path.push(price);
     }
     paths.push(path);
