@@ -11,7 +11,6 @@ import { pluginRegistry } from '@/web/lib/plugins';
 import type { StrategyPlugin, ParamSchema } from '@/web/lib/plugins';
 import {
   buildEquityCurveChart,
-  buildTradeDistributionChart,
   buildMonthlyReturnsChart,
 } from '@/web/lib/backtestCharts';
 import {
@@ -27,13 +26,9 @@ import {
   buildRiskGaugeChart,
   calculateRiskScore,
 } from '@/web/lib/riskCharts';
+import type { SearchResult } from '@/web/types/stock';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
-
-interface SearchResult {
-  code: string;
-  name: string;
-}
 
 /** Build the default param values from a plugin's param schema */
 function buildDefaultParams(params: ParamSchema[]): Record<string, number | string> {

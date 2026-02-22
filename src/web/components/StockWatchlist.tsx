@@ -45,7 +45,7 @@ interface SectorStocksResponse {
   stocks: StockData[];
 }
 
-interface SearchResult {
+interface WatchlistSearchResult {
   ticker: string;
   name: string;
   market: string;
@@ -133,7 +133,7 @@ export default function StockWatchlist({ onSelectStock }: StockWatchlistProps) {
   const [activeTab, setActiveTab] = useState<MainTab>('热门');
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchResults, setSearchResults] = useState<WatchlistSearchResult[]>([]);
 
   // Hot stocks (paginated)
   const [hotStocks, setHotStocks] = useState<StockData[]>([]);
@@ -235,7 +235,7 @@ export default function StockWatchlist({ onSelectStock }: StockWatchlistProps) {
           const data = await res.json();
           // Search returns suggestions; find exact match
           if (Array.isArray(data) && data.length > 0) {
-            const match = data.find((s: SearchResult) => s.ticker === code || s.fullCode === code) || data[0];
+            const match = data.find((s: WatchlistSearchResult) => s.ticker === code || s.fullCode === code) || data[0];
             return {
               ticker: match.fullCode || match.ticker,
               name: match.name,
@@ -395,7 +395,7 @@ export default function StockWatchlist({ onSelectStock }: StockWatchlistProps) {
     );
   };
 
-  const renderSearchRow = (item: SearchResult, index: number) => (
+  const renderSearchRow = (item: WatchlistSearchResult, index: number) => (
     <div
       key={`${item.fullCode}-${index}`}
       role="button"

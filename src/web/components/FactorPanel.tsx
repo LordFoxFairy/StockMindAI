@@ -5,15 +5,12 @@ import ReactECharts from 'echarts-for-react';
 import { Search, Loader2, X, Plus, Play, FlaskConical } from 'lucide-react';
 import { useTheme } from '@/web/components/ThemeProvider';
 
+import type { SearchResult } from '@/web/types/stock';
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
 
 const MIN_STOCKS = 3;
 const MAX_STOCKS = 15;
-
-interface SearchResult {
-  code: string;
-  name: string;
-}
 
 interface FactorDef {
   key: string;

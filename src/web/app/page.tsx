@@ -12,13 +12,13 @@ import PredictionPanel from '@/web/components/PredictionPanel';
 import ComparePanel from '@/web/components/ComparePanel';
 import PortfolioPanel from '@/web/components/PortfolioPanel';
 import FactorPanel from '@/web/components/FactorPanel';
-import { Activity, BarChart2, Briefcase, GitCompareArrows, LayoutDashboard, Settings, Target, User, Sun, Moon } from 'lucide-react';
-import { generateId } from 'ai';
+import AgentInsightPanel from '@/web/components/AgentInsightPanel';
+import { Activity, BarChart2, Briefcase, GitCompareArrows, LayoutDashboard, Settings, Target, User, Sun, Moon, Sparkles } from 'lucide-react';
 import { useTheme } from '@/web/components/ThemeProvider';
 
 // --- Module-based navigation types & config ---
 
-type ModuleId = 'market' | 'quant' | 'predict' | 'compare' | 'portfolio';
+type ModuleId = 'market' | 'quant' | 'insight' | 'compare' | 'portfolio';
 
 interface ModuleConfig {
   id: ModuleId;
@@ -52,13 +52,14 @@ const MODULES: ModuleConfig[] = [
     defaultTab: 'quant',
   },
   {
-    id: 'predict',
-    icon: Target,
-    label: 'AI预测',
+    id: 'insight',
+    icon: Sparkles,
+    label: 'AI洞察',
     tabs: [
+      { id: 'cards', label: 'AI卡片' },
       { id: 'predict', label: '预测' },
     ],
-    defaultTab: 'predict',
+    defaultTab: 'cards',
   },
   {
     id: 'compare',
@@ -145,6 +146,29 @@ function saveToStorage(key: string, value: unknown): void {
 
 // --- Valid module IDs ---
 const ALL_MODULE_IDS: ModuleId[] = MODULES.map(m => m.id);
+
+function getMarketStatus(): { label: string; isOpen: boolean } {
+  const now = new Date();
+  // Beijing time = UTC+8
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const beijing = new Date(utc + 8 * 3600000);
+  const day = beijing.getDay();
+  const h = beijing.getHours();
+  const m = beijing.getMinutes();
+  const minutes = h * 60 + m;
+
+  // Weekends
+  if (day === 0 || day === 6) return { label: '休市', isOpen: false };
+
+  // Trading hours: 9:30-11:30, 13:00-15:00
+  const morning = minutes >= 570 && minutes < 690; // 9:30-11:30
+  const afternoon = minutes >= 780 && minutes < 900; // 13:00-15:00
+
+  if (morning || afternoon) return { label: '交易中', isOpen: true };
+  if (minutes >= 690 && minutes < 780) return { label: '午间休市', isOpen: false };
+  if (minutes >= 900) return { label: '已收盘', isOpen: false };
+  return { label: '未开盘', isOpen: false };
+}
 
 export default function Home() {
   const [activeModule, setActiveModule] = useState<ModuleId>('market');
@@ -243,8 +267,8 @@ export default function Home() {
   };
 
   const handleSendMessage = async (msg: string) => {
-    const userMessageId = generateId();
-    const assistantMessageId = generateId();
+    const userMessageId = crypto.randomUUID();
+    const assistantMessageId = crypto.randomUUID();
 
     setMessages((prev) => [
       ...prev,
@@ -486,6 +510,9 @@ export default function Home() {
       case 'lab':
         return <StrategyLab initialStock={selectedStock} />;
 
+      case 'cards':
+        return <AgentInsightPanel initialStock={selectedStock} />;
+
       case 'predict':
         return <PredictionPanel initialStock={selectedStock} />;
 
@@ -542,19 +569,8 @@ export default function Home() {
           })}
         </nav>
 
-        {/* Bottom: theme toggle, settings, user */}
+        {/* Bottom: settings, user */}
         <div className="flex flex-col gap-4 w-full items-center mt-auto">
-          <button
-            onClick={toggleTheme}
-            className="p-3 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 rounded-xl transition-all"
-            aria-label="Toggle theme"
-          >
-            {theme === 'light' ? (
-              <Moon className="w-5 h-5" />
-            ) : (
-              <Sun className="w-5 h-5" />
-            )}
-          </button>
           <button className="p-3 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 rounded-xl transition-all">
             <Settings className="w-5 h-5" />
           </button>
@@ -576,7 +592,7 @@ export default function Home() {
               <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
                 StockMind AI
               </h1>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono tracking-wider bg-blue-100 dark:bg-cyan-900/30 text-blue-600 dark:text-cyan-400 border border-blue-200 dark:border-cyan-800/30">TERMINAL v1.0</span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono tracking-wider bg-blue-100 dark:bg-cyan-900/30 text-blue-600 dark:text-cyan-400 border border-blue-200 dark:border-cyan-800/30">TERMINAL v1.0.4</span>
             </div>
 
             <div className="h-6 w-px bg-slate-200 dark:bg-white/10"></div>
@@ -607,13 +623,30 @@ export default function Home() {
           </div>
 
           <div className="flex gap-3 items-center">
-            <div className="flex items-center gap-2 px-3 py-1.5 text-xs font-mono bg-slate-100 dark:bg-[#0a0e17] border border-slate-200 dark:border-white/5 rounded-lg text-emerald-600 dark:text-emerald-400">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              市场开盘
-            </div>
+            {(() => {
+              const status = getMarketStatus();
+              const colorClass = status.isOpen
+                ? 'text-emerald-600 dark:text-emerald-400'
+                : status.label === '午间休市'
+                  ? 'text-amber-600 dark:text-amber-400'
+                  : 'text-slate-500 dark:text-slate-400';
+              const dotColor = status.isOpen
+                ? 'bg-emerald-500'
+                : status.label === '午间休市'
+                  ? 'bg-amber-500'
+                  : 'bg-slate-400 dark:bg-slate-500';
+              return (
+                <div className={`flex items-center gap-2 px-3 py-1.5 text-xs font-mono bg-slate-100 dark:bg-[#0a0e17] border border-slate-200 dark:border-white/5 rounded-lg ${colorClass}`}>
+                  <span className="relative flex h-2 w-2">
+                    {status.isOpen && (
+                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${dotColor} opacity-75`}></span>
+                    )}
+                    <span className={`relative inline-flex rounded-full h-2 w-2 ${dotColor}`}></span>
+                  </span>
+                  {status.label}
+                </div>
+              );
+            })()}
 
             {/* Theme Toggle Button (header) */}
             <button

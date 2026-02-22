@@ -20,14 +20,11 @@ import {
   buildIndicatorCompareChart,
 } from '@/web/lib/compareCharts';
 
+import type { SearchResult } from '@/web/types/stock';
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
 
 const MAX_STOCKS = 5;
-
-interface SearchResult {
-  code: string;
-  name: string;
-}
 
 const PERIOD_OPTIONS = [
   { klt: 101, label: '日' },

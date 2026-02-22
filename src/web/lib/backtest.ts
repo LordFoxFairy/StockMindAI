@@ -6,6 +6,7 @@ import type {
   MACrossResult,
   CrossSignal,
 } from './indicators';
+import { fixedFractionalSize, kellySize, atrSize } from './positionSizing';
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 
@@ -143,55 +144,59 @@ export function runBacktest(
     return count > 0 ? sum / count : 0;
   }
 
-  // Helper: calculate shares based on position sizing
+  // Helper: calculate shares based on position sizing (delegates to positionSizing module)
   function calcShares(price: number, barIdx: number): number {
     const sizing = config?.positionSizing;
+    // Account for commission in effective price
+    const effectivePrice = price * (1 + commission);
+
     if (!sizing || sizing.type === 'full') {
-      return Math.floor(cash / (price * (1 + commission)));
+      return Math.floor(cash / effectivePrice);
     }
 
     const riskPct = sizing.riskPercent ?? 0.02;
 
     if (sizing.type === 'fixed_fraction') {
-      // Risk riskPct of capital. If stopLoss defined, use it to size
-      if (stopLoss && stopLoss.type === 'percent') {
-        const riskPerShare = price * stopLoss.value;
-        const maxRisk = cash * riskPct;
-        return Math.floor(maxRisk / (riskPerShare + price * commission));
-      }
-      // Fallback: allocate riskPct of capital
-      const allocation = cash * riskPct * 10; // rough sizing
-      return Math.floor(allocation / (price * (1 + commission)));
+      const slPct = stopLoss?.type === 'percent' ? stopLoss.value : 0.05;
+      const result = fixedFractionalSize(
+        { capital: cash, price: effectivePrice, stopLossPercent: slPct },
+        riskPct,
+      );
+      return result.shares;
     }
 
     if (sizing.type === 'kelly') {
-      // Half-Kelly: f* = (bp - q) / b, use half
       const frac = sizing.kellyFraction ?? 0.5;
       if (trades.length < 5) {
         // Not enough data for Kelly, use 10% of capital
-        return Math.floor((cash * 0.1) / (price * (1 + commission)));
+        return Math.floor((cash * 0.1) / effectivePrice);
       }
       const wins = trades.filter(t => t.pnl > 0);
       const losses = trades.filter(t => t.pnl <= 0);
-      const p = wins.length / trades.length;
+      const winRate = wins.length / trades.length;
       const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + Math.abs(t.pnlPercent), 0) / wins.length : 0;
-      const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + Math.abs(t.pnlPercent), 0) / losses.length : 0.01;
-      const b = avgLoss > 0 ? avgWin / avgLoss : 1;
-      const q = 1 - p;
-      let kelly = (b * p - q) / b;
-      kelly = Math.max(0, Math.min(kelly * frac, 0.25)); // cap at 25%
-      return Math.floor((cash * kelly) / (price * (1 + commission)));
+      const avgLoss = losses.length > 0 ? -(losses.reduce((s, t) => s + Math.abs(t.pnlPercent), 0) / losses.length) : -0.01;
+      const result = kellySize(
+        { capital: cash, price: effectivePrice, winRate, avgWin, avgLoss },
+        frac,
+      );
+      // Cap at 25% of capital
+      const maxShares = Math.floor((cash * 0.25) / effectivePrice);
+      return Math.min(result.shares, maxShares);
     }
 
     if (sizing.type === 'atr') {
       const atr = computeATR(barIdx);
-      if (atr <= 0) return Math.floor((cash * 0.1) / (price * (1 + commission)));
-      const maxRisk = cash * riskPct;
-      const atrMultiplier = 2;
-      return Math.floor(maxRisk / (atrMultiplier * atr + price * commission));
+      if (atr <= 0) return Math.floor((cash * 0.1) / effectivePrice);
+      const result = atrSize(
+        { capital: cash, price: effectivePrice, atr },
+        riskPct,
+        2,
+      );
+      return result.shares;
     }
 
-    return Math.floor(cash / (price * (1 + commission)));
+    return Math.floor(cash / effectivePrice);
   }
 
   // Helper: close position

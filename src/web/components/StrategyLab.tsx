@@ -7,6 +7,8 @@ import { useTheme } from '@/web/components/ThemeProvider';
 import type { BacktestResult, BacktestMetrics } from '@/web/lib/backtest';
 import { buildEquityCurveChart } from '@/web/lib/backtestCharts';
 
+import type { SearchResult } from '@/web/types/stock';
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
 
 const PERIOD_OPTIONS = [
@@ -14,11 +16,6 @@ const PERIOD_OPTIONS = [
   { klt: 102, label: '周' },
   { klt: 103, label: '月' },
 ];
-
-interface SearchResult {
-  code: string;
-  name: string;
-}
 
 interface LabMessage {
   id: string;

@@ -18,12 +18,9 @@ import {
   buildATRChart,
 } from '@/web/lib/indicatorCharts';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
+import type { SearchResult } from '@/web/types/stock';
 
-interface SearchResult {
-  code: string;
-  name: string;
-}
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3135';
 
 // Dynamically build the indicator list from the plugin registry
 const INDICATOR_PLUGINS = pluginRegistry.getByCategory<IndicatorPlugin>('indicator');
