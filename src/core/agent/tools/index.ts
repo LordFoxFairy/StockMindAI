@@ -7,6 +7,7 @@ import { portfolioTools } from "./portfolio";
 import { factorTools } from "./factor";
 import { screeningTools } from "./screening";
 import { recommendTools } from "./recommend";
+import { deepPredictStock } from "./deepPredict";
 
 // Grouped tool exports
 export const searchTools = [duckduckgoSearch, searchNewsTool, searchStockInfo];
@@ -14,6 +15,7 @@ export const marketTools = [queryStockData, queryStockKline, queryStockNews, que
 export const analysisTools = [backtestStrategy, optimizeStrategy, predictStock];
 export const compareTools = [compareStocks, riskAnalysis];
 export const chartTools = [generateEchartsConfig];
+export const predictionTools = [deepPredictStock];
 
 export const allTools = [
   ...searchTools,
@@ -25,4 +27,5 @@ export const allTools = [
   ...factorTools,
   ...screeningTools,
   ...recommendTools,
+  ...predictionTools,
 ];
