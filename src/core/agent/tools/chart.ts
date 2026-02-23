@@ -1,17 +1,27 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
+const seriesItemSchema = z.object({
+  name: z.string().optional(),
+  type: z.string(),
+  data: z.array(z.any()),
+}).passthrough();
+
 const generateEchartsConfigToolSchema = z.object({
   title: z.object({ text: z.string().optional() }).optional(),
   tooltip: z.object({}).passthrough().optional(),
   legend: z.object({ data: z.array(z.string()).optional() }).passthrough().optional(),
   xAxis: z.any().optional(),
   yAxis: z.any().optional(),
-  series: z.array(z.object({
-    name: z.string().optional(),
-    type: z.string(),
-    data: z.array(z.any()),
-  }).passthrough()),
+  series: z.preprocess(
+    (val) => {
+      if (typeof val === 'string') {
+        try { return JSON.parse(val); } catch { return val; }
+      }
+      return val;
+    },
+    z.array(seriesItemSchema),
+  ),
 }).passthrough();
 
 export const generateEchartsConfig = tool(
